@@ -52,10 +52,38 @@ Inverse of the preceding `#ifdef` or `#ifndef` expression.
 Command Line Options
 --------------------
 
+For command line options, see the usage by running:
+
+```none
+$ bashpp --help
 ```
+
+Here are the options as of 7 Aug 2015.
+
+```none
+Usage: bashpp [options] file...
+Options:
   -I dir                Add the directory defined by dir to the include path.
 
-  -D NAME=VALUE         Define NAME equal to VALUE.  If VALUE is omitted, NAME
-                        is just defined and will produce a positive result in
-                        conjunction with a #ifdef directive.
+  -D name               Predefine name as a macro, with definition 1.
+
+  -D name=definition    The contents of definition are tokenized and processed
+                        as if they appeared during translation in a #define
+                        directive.
+
+                        If you are invoking the preprocessor from a shell or
+                        shell-like program you may need to use the shell's
+                        quoting syntax to protect characters such as spaces that
+                        have a meaning in the shell syntax.
+
+                        -D and -U options are processed in the order they are
+                        given on the command line.
+
+  -o file               Place the output into <file>
+
+Arguments:
+    file                Specify an input file.  By default, input is read from
+                        standard input.
+
+Copyright (C) 2015 Craig Phillips.  All rights reserved.
 ```
