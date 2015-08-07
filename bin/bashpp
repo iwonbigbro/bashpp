@@ -7,17 +7,25 @@ set -euo pipefail
 bashpp=$(readlink -f "$BASH_SOURCE")
 bashpp_dir=${bashpp%/*}
 
-IFS=":" include_dir=( ${INC:-} )
+IFS=":" include_dir=( ${BASHINC:-} )
+
+declare -A DEFS=()
+declare -A DEFNS=()
 
 output="/dev/stdout"
 
+verbose=0
 errors=0
 warnings=0
 lineno=0
 
-line=
 file=
+line=
 buf=
+
+function aacpy() {
+    declare -p $1 | sed 's?^[^=]\+=??'
+}
 
 function die() {
     local funcname=${FUNCNAME[1]:-}
@@ -70,7 +78,9 @@ function warn() {
 }
 
 function info() {
-    msg "$(msgtype_colour "info")" "$*"
+    if (( verbose )) ; then
+        msg "$(msgtype_colour "info")" "$*"
+    fi
 }
 
 function add_include_dir() {
@@ -85,29 +95,49 @@ function add_include_dir() {
     fi
 }
 
+function definefn() {
+    err "macro functions currently not supported"
+}
+
 function define() {
     local name=${1%%(*} \
           parens=${1#*(} \
-          define=$2
+          define=${2:-1}
 
     if ! [[ $name =~ ^[A-Za-z_][A-Za-z0-9_]+$ ]] ; then
         err "illegal definition name: $name"
     fi
 
-    if [[ $parens ]] ; then
-        definefn "$name" "$parens" "$define"
+    if [[ $1 == *"("* ]] ; then
+        definefn "$name" "${parens%)}" "$define"
         return 0
     fi
 
-    DEFS+=( "$name" )
+    info "-D $name=$define"
+
+    DEFS[$name]=$define
+}
+
+function undef() {
+    info "-U $1"
+
+    unset DEFS[$1]
+    unset DEFNS[$1]
 }
 
 function add_define() {
-    true
+    local name=${1%%=*} \
+          define=${1#*=}
+
+    if [[ $1 == *"="* ]] ; then
+        define "${1%%=*}" "${1#*=}"
+    else
+        define "$1" 1
+    fi
 }
 
 function remove_define() {
-    true
+    undef "$1"
 }
 
 function process_line() {
@@ -165,6 +195,8 @@ Options:
 
   -o file               Place the output into <file>
 
+  -v                    Verbose mode.
+
 Arguments:
     file                Specify an input file.  By default, input is read from
                         standard input.
@@ -202,6 +234,9 @@ while (( $# > 0 )) ; do
         ;;
     (-o*)
         output=$(readlink -m "${1#-o}")
+        ;;
+    (-v)
+        (( ++verbose ))
         ;;
     (-\?|--help)
         usage
