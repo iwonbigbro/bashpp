@@ -1,0 +1,224 @@
+#!/bin/bash
+
+# Copyright (C) 2015 Craig Phillips.  All rights reserved.
+
+set -euo pipefail
+
+bashpp=$(readlink -f "$BASH_SOURCE")
+bashpp_dir=${bashpp%/*}
+
+IFS=":" include_dir=( ${INC:-} )
+
+output="/dev/stdout"
+
+errors=0
+warnings=0
+lineno=0
+
+line=
+file=
+buf=
+
+function die() {
+    local funcname=${FUNCNAME[1]:-}
+
+    echo >&2 "${bashpp##*/}: error:${funcname:+ $funcname} $*"
+    exit 1
+}
+
+function msgtype_colour() {
+    local on= off=
+
+    if [[ -t 2 ]] ; then
+        case $1 in
+        (error)   on="[1m[38;5;167m" ;;
+        (warning) on="[1m[38;5;213m" ;;
+        (info)    on="[1m[38;5;106m" ;;
+        esac
+
+        off="[39m[0m"
+    fi
+
+    printf "${on}%s${off}" "$1"
+}
+
+function msg() {
+    local msgtype=$1
+    shift
+
+    if [[ $file == "/dev/stdin" ]] ; then
+        printf >&2 "<stdin>:$lineno: $msgtype: %s\n" "$*"
+    else
+        printf >&2 "$file:$lineno: $msgtype: %s\n" "$*"
+    fi
+}
+
+function err() {
+    (( ++errors ))
+
+    if (( lineno == 0 )) ; then
+        die "$@"
+    fi
+
+    msg "$(msgtype_colour "error")" "$*"
+}
+
+function warn() {
+    (( ++warnings ))
+
+    msg "$(msgtype_colour "warning")" "$*"
+}
+
+function info() {
+    msg "$(msgtype_colour "info")" "$*"
+}
+
+function add_include_dir() {
+    if [[ ! $1 ]] ; then
+        die "No directory specified"
+    elif [[ ! -d $1 ]] ; then
+        die "No such directory: $1"
+    fi
+
+    if [[ " ${include_dir[*]:-} " != *" $1 "* ]] ; then
+        include_dir+=( "$1" )
+    fi
+}
+
+function define() {
+    local name=${1%%(*} \
+          parens=${1#*(} \
+          define=$2
+
+    if ! [[ $name =~ ^[A-Za-z_][A-Za-z0-9_]+$ ]] ; then
+        err "illegal definition name: $name"
+    fi
+
+    if [[ $parens ]] ; then
+        definefn "$name" "$parens" "$define"
+        return 0
+    fi
+
+    DEFS+=( "$name" )
+}
+
+function add_define() {
+    true
+}
+
+function remove_define() {
+    true
+}
+
+function process_line() {
+    printf "%s\n" "$line"
+}
+
+function iter_lines() {
+    local curlineno=$lineno
+    local curline=$line
+    local curbuf=$buf
+
+    lineno=0
+    buf=
+
+    while IFS=$'\x00' read -r line ; do
+        (( ++lineno ))
+
+        process_line
+    done <"$file"
+
+    buf=$curbuf
+    line=$curline
+    lineno=$curlineno
+}
+
+function iter_files() {
+    local curfile=$file
+
+    for file in "$@" ; do
+        iter_lines
+    done
+
+    file=$curfile
+}
+
+function usage() {
+    cat <<USAGE
+Usage: ${bashpp##*/} [options] file...
+Options:
+  -I dir                Add the directory defined by dir to the include path.
+
+  -D name               Predefine name as a macro, with definition 1.
+
+  -D name=definition    The contents of definition are tokenized and processed
+                        as if they appeared during translation in a #define
+                        directive.
+
+                        If you are invoking the preprocessor from a shell or
+                        shell-like program you may need to use the shell's
+                        quoting syntax to protect characters such as spaces that
+                        have a meaning in the shell syntax.
+
+                        -D and -U options are processed in the order they are
+                        given on the command line.
+
+  -o file               Place the output into <file>
+
+Arguments:
+    file                Specify an input file.  By default, input is read from
+                        standard input.
+
+Copyright (C) 2015 Craig Phillips.  All rights reserved.
+USAGE
+}
+
+while (( $# > 0 )) ; do
+    case $1 in
+    (-I)
+        add_include_dir "$2"
+        shift
+        ;;
+    (-I*)
+        add_include_dir "${1#-I}"
+        ;;
+    (-D)
+        add_define "$2"
+        shift
+        ;;
+    (-D*)
+        add_define "${1#-D}"
+        ;;
+    (-U)
+        remove_define "$2"
+        shift
+        ;;
+    (-U*)
+        remove_define "${1#-U}"
+        ;;
+    (-o)
+        output=$(readlink -m "$2")
+        shift
+        ;;
+    (-o*)
+        output=$(readlink -m "${1#-o}")
+        ;;
+    (-\?|--help)
+        usage
+        exit 0
+        ;;
+    (-*)
+        err "Illegal option: $1"
+        ;;
+    (*)
+        break
+        ;;
+    esac
+    shift
+done
+
+if (( $# == 0 )) ; then
+    set -- /dev/stdin
+fi
+
+iter_files "$@"
