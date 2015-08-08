@@ -1,6 +1,8 @@
 Bash Pre-Processor
 ==================
 
+[![Circle CI](https://circleci.com/gh/iwonbigbro/bashpp.svg?style=svg)](https://circleci.com/gh/iwonbigbro/bashpp)
+
 There are certain instances where you need to statically include other scripts
 within a primary single script.  For example, RPM spec %pre scripts can't
 utilise any scripts that are deployed during the installation of an RPM,
