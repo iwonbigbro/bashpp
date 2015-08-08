@@ -4,14 +4,10 @@ set -euo pipefail
 
 export PATH=$PATH:$(readlink -m "$BASH_SOURCE/../../bin")
 
-TMPDIR=$(mktemp -d)
-trap "rm -rf $TMPDIR" EXIT
+script=$(mktemp)
+trap "rm -f $script" EXIT
 
-export TMPDIR
-
-simple_script=$TMPDIR/simple-script.sh
-
-cat >$simple_script <<'SCRIPT'
+cat >$script <<'SCRIPT'
 #!/bin/bash
 
 # Copyright (C) 2015 Craig Phillips.  All rights reserved.
@@ -21,6 +17,5 @@ myprogram=$(readlink -f "$BASH_SOURCE")
 exit 0
 SCRIPT
 
-bashpp $simple_script >$simple_script.a
-
-diff $simple_script $simple_script.a
+bashpp $script >$script.a
+diff -U3 $script $script.a
