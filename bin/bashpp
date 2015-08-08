@@ -11,6 +11,10 @@ IFS=":" include_dir=( ${BASHINC:-} )
 
 declare -A DEFS=()
 declare -A DEFNS=()
+declare -A DIRS=(
+    ["define"]=1
+    ["undef"]=1
+)
 
 output="/dev/stdout"
 
@@ -109,7 +113,7 @@ function define() {
           parens=${1#*(} \
           define=${2:-1}
 
-    if ! [[ $name =~ ^[A-Za-z_][A-Za-z0-9_]+$ ]] ; then
+    if ! [[ $name =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] ; then
         err "illegal definition name: $name"
     fi
 
@@ -153,23 +157,74 @@ function set_state() {
     st=${!1}
 }
 
+function process_define() {
+    local args=${line:$charno}
+
+    if [[ $args =~ ^([A-Za-z_][A-Za-z0-9_]*)[\ \t]+(.*)$ ]] ; then
+        define "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+        return
+
+    elif [[ $args =~ ^([A-Za-z_][A-Za-z0-9_]*)$ ]] ; then
+        define "${BASH_REMATCH[1]}" 1
+        return
+
+    fi
+
+    err "illegal define: $line"
+    return 1
+}
+
 function process_char() {
-    local c=$1 def=
+    local c=$1 k= def=
 
     if (( st == parsing )) ; then
-        if [[ $c == [A-Za-z_] ]] ; then
+        if (( charno == 1 )) && [[ $c == '#' ]] ; then
+            set_state found_directive
+
+            buf+=$c
+            return
+
+        elif [[ $c == [A-Za-z_] ]] ; then
             set_state found_word
 
             buf+=$c
-
             return
         fi
+    fi
+
+    if (( st == found_directive )) ; then
+        if [[ $c == [A-Za-z_] ]] ; then
+            buf+=$c
+            return
+
+        elif [[ $buf ]] ; then
+            k=${buf//[#\t\ ]/}
+
+            if [[ $k ]] ; then
+                def=${DIRS[$k]:-}
+
+                if [[ $def ]] ; then
+                    if process_$k ; then
+                        set_state parsing
+
+                        buf=
+                        return 1
+                    fi
+                fi
+
+                err "invalid directive: $buf"
+            fi
+
+            printf "%s" "$buf"
+            buf=
+        fi
+
+        set_state parsing
     fi
 
     if (( st == found_word )) ; then
         if [[ $c == [A-Za-z_] ]] ; then
             buf+=$c
-
             return
 
         elif [[ $buf ]] ; then
@@ -191,14 +246,21 @@ function process_char() {
 }
 
 function process_line() {
+    local curcharno=$charno
     local i= c=
 
-    for (( i = 0 ; i < ${#line} ; ++i )) ; do
-        char=$i
-        process_char "${line:$i:1}"
-    done
+    charno=0
 
+    for (( i = 0 ; i < ${#line} ; ++i )) ; do
+        (( ++charno ))
+
+        if ! process_char "${line:$i:1}" ; then
+            break
+        fi
+    done
     process_char $'\n'
+
+    charno=$curcharno
 }
 
 function iter_lines() {
