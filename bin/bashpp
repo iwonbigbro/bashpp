@@ -317,4 +317,4 @@ if (( $# == 0 )) ; then
     set -- /dev/stdin
 fi
 
-iter_files "$@"
+iter_files "$@" >"$output"
