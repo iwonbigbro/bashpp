@@ -18,10 +18,12 @@ verbose=0
 errors=0
 warnings=0
 lineno=0
+charno=0
 
 file=
 line=
 buf=
+st=
 
 function aacpy() {
     declare -p $1 | sed 's?^[^=]\+=??'
@@ -54,10 +56,13 @@ function msg() {
     local msgtype=$1
     shift
 
-    if [[ $file == "/dev/stdin" ]] ; then
-        printf >&2 "<stdin>:$lineno: $msgtype: %s\n" "$*"
+    if [[ ! $file ]] ; then
+        local funcname=${FUNCNAME[1]:-}
+        printf >&2 "${bashpp##*/}: $msgtype:${funcname:+ $funcname} %s\n" "$*"
+    elif [[ $file == "/dev/stdin" ]] ; then
+        printf >&2 "<stdin>:$lineno:$charno $msgtype: %s\n" "$*"
     else
-        printf >&2 "$file:$lineno: $msgtype: %s\n" "$*"
+        printf >&2 "$file:$lineno:$charno $msgtype: %s\n" "$*"
     fi
 }
 
@@ -140,17 +145,72 @@ function remove_define() {
     undef "$1"
 }
 
+parsing=0
+found_word=1
+found_directive=2
+
+function set_state() {
+    st=${!1}
+}
+
+function process_char() {
+    local c=$1 def=
+
+    if (( st == parsing )) ; then
+        if [[ $c == [A-Za-z_] ]] ; then
+            set_state found_word
+
+            buf+=$c
+
+            return
+        fi
+    fi
+
+    if (( st == found_word )) ; then
+        if [[ $c == [A-Za-z_] ]] ; then
+            buf+=$c
+
+            return
+
+        elif [[ $buf ]] ; then
+            def=${DEFS[$buf]:-}
+
+            if [[ $def ]] ; then
+                info "substituting '$buf' for '$def'"
+                buf=$def
+            fi
+
+            printf "%s" "$buf"
+            buf=
+        fi
+
+        set_state parsing
+    fi
+
+    printf "%s" "$c"
+}
+
 function process_line() {
-    printf "%s\n" "$line"
+    local i= c=
+
+    for (( i = 0 ; i < ${#line} ; ++i )) ; do
+        char=$i
+        process_char "${line:$i:1}"
+    done
+
+    process_char $'\n'
 }
 
 function iter_lines() {
     local curlineno=$lineno
     local curline=$line
     local curbuf=$buf
+    local curst=$st
 
     lineno=0
     buf=
+
+    set_state parsing
 
     while IFS=$'\x00' read -r line ; do
         (( ++lineno ))
@@ -158,6 +218,7 @@ function iter_lines() {
         process_line
     done <"$file"
 
+    st=$curst
     buf=$curbuf
     line=$curline
     lineno=$curlineno
