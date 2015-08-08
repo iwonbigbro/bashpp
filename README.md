@@ -83,6 +83,8 @@ Options:
 
   -o file               Place the output into <file>
 
+  -v                    Verbose mode.
+
 Arguments:
     file                Specify an input file.  By default, input is read from
                         standard input.
