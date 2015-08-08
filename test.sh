@@ -13,22 +13,47 @@ P="[38;5;106m\u2714[0m"
 
 mkdir -p "$b/t"
 
-count=0
+trap "true" INT
 
-for f in $t/test_*.sh ; do
-    ff=t/${f##*/}
+if hash time 2>/dev/null ; then
+function time_fn() {
+    \time -f " - took %e secs" -o $b/$ff.t "$@"
+}
+else
+function time_fn() {
+    :> $b/$ff.t
+    "$@"
+}
+fi
 
-    (( ++count ))
+while true ; do
+    count=0
 
-    printf " $R  %s" "$ff"
+    for f in $t/test_*.sh ; do
+        ff=t/${f##*/}
 
-    if bash -x $f 1>$b/$ff.o 2>$b/$ff.e ; then
-        printf "\r $P  %s\n" "$ff"
+        (( ++count ))
+
+        printf " $R  %s" "$ff"
+
+        if time_fn bash -x $f 1>$b/$ff.o 2>$b/$ff.e ; then
+            printf "\r $P  %s[38;5;106m%s[0m\n" "$ff" "$(cat $b/$ff.t)"
+        else
+            :>$b/$ff.f
+
+            printf "\r $F  %s[38;5;167m%s[0m\n" "$ff" "$(cat $b/$ff.t)"
+            e=1
+        fi
+    done
+
+    if [[ $CONTINUOUS ]] ; then
+        sleep 5
+
+        if (( ( $? - 128 ) == 2 )) ; then
+            break
+        fi
     else
-        :>$b/$ff.f
-
-        printf "\r $F  %s\n" "$ff"
-        e=1
+        break
     fi
 done
 
