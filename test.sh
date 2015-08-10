@@ -5,7 +5,11 @@
 t=$(readlink -m "$BASH_SOURCE/../t")
 b=$(readlink -m "$BASH_SOURCE/../BUILDROOT")
 
+rm -rf $b/t
+
 e=0
+
+bash_opts=
 
 R="[38;5;208m\u25CF[0m"
 F="[38;5;167m\u2718[0m"
@@ -15,9 +19,13 @@ mkdir -p "$b/t"
 
 trap "true" INT
 
+if [[ $DEBUG == 1 ]] ; then
+    bash_opts+=-x
+fi
+
 if hash time 2>/dev/null ; then
 function time_fn() {
-    \time -f " - took %e secs" -o $b/$ff.t "$@"
+    \time -f " - took %e (S:%S, U:%U) secs" -o $b/$ff.t "$@"
 }
 else
 function time_fn() {
@@ -36,22 +44,32 @@ while true ; do
 
         printf " $R  %s" "$ff"
 
-        if time_fn bash -x $f 1>$b/$ff.o 2>$b/$ff.e ; then
-            printf "\r $P  %s[38;5;106m%s[0m\n" "$ff" "$(cat $b/$ff.t)"
+        export bash_opts
+
+        if time_fn bash $bash_opts $f 1>$b/$ff.o 2>&1 ; then
+            printf "\r $P  %s[38;5;106m%s[0m\n" "$ff" "$(tail -1 $b/$ff.t)"
         else
             :>$b/$ff.f
 
-            printf "\r $F  %s[38;5;167m%s[0m\n" "$ff" "$(cat $b/$ff.t)"
+            printf "\r $F  %s[38;5;167m%s[0m\n" "$ff" "$(tail -1 $b/$ff.t)"
+
+            if [[ $VERBOSE == 1 ]] ; then
+                while IFS=$'\0' read -r line ; do
+                    printf "      [38;5;167m%s[0m\n" "$line"
+                done < "$b/$ff.o"
+            fi
             e=1
         fi
     done
 
-    if [[ $CONTINUOUS ]] ; then
+    if [[ $CONTINUOUS == 1 ]] ; then
         sleep 5
 
         if (( ( $? - 128 ) == 2 )) ; then
             break
         fi
+
+        printf "%s\n" " ----- "
     else
         break
     fi
@@ -70,10 +88,6 @@ $(for f in $b/t/*.o ; do
     printf '  <system-out><![CDATA[\n'
     strings $b/t/$fn.o
     printf '  ]]></system-out>\n'
-
-    printf '  <system-err><![CDATA[\n'
-    strings $b/t/$fn.e
-    printf '  ]]></system-err>\n'
 
     if [[ -e $b/t/$fn.f ]] ; then
         printf '<failure type="error">Test failed - see output</failure>\n'
