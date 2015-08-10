@@ -66,7 +66,8 @@ heredoc_inline
 heredoc_tag
 heredoc_tagged
 heredoc
-logic
+conditional
+conditional_operator
 number
 parens
 parsing
@@ -98,6 +99,8 @@ hd=
 
 flushbuf=0
 freezebuf=0
+
+files=()
 
 filesize=
 errline=
@@ -171,7 +174,7 @@ function msg() {
     local show_errorline=1
     shift
 
-    if [[ ! $file ]] ; then
+    if [[ ! ${file:-} ]] ; then
         bashpp_msg "$msgtype_colour" "$*"
     else
         if [[ $msgtype != +(error|warn) ]] ; then
@@ -276,7 +279,7 @@ if (( BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 2 )) ; then
     function substr() {
         local str=${!1}
         local strlen=${#str} \
-              offset=$2 \
+              offset=${2:-} \
               length=${3:--1}
 
         if (( length < 0 )) ; then
@@ -295,7 +298,16 @@ if (( BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 2 )) ; then
     }
 else
     function substr() {
-        printf "%s" "${1:${2:-}:${3:-}}"
+        local str=${!1}
+        local strlen=${#str} \
+              offset=${2:-} \
+              length=${3:--1}
+
+        if (( length > -1 )) ; then
+            printf "%s" "${str:$offset:$length}"
+        else
+            printf "%s" "${str: $offset}"
+        fi
     }
 fi
 
@@ -478,7 +490,7 @@ function push_buf() {
     if (( SECONDS > 0 )) ; then
         local p=$(( ( fileoffset * 100 ) / filesize ))
 
-        info "${p}% complete"
+        info "${p}% complete - current state = '$st_name'"
 
         SECONDS=0
     fi
@@ -595,12 +607,61 @@ function process_char() {
         if [[ $c == '\' ]] ; then
             push_state escape
         elif [[ $c == '[' ]] ; then
-            switch_state logic
+            switch_state conditional
         elif [[ $c == ']' ]] ; then
             pop_state
         fi
     elif (( st == comment )) ; then
         if [[ $c == $'\n' ]] ; then
+            pop_state
+        fi
+    elif (( st == conditional )) ; then
+        if (( st_charno == 1 )) ; then
+            if [[ $c != ' ' ]] ; then
+                warning "missing whitespace in conditional expression"
+
+                if [[ $c == [\-=\!\<\>] ]] ; then
+                    push_state conditional_operator
+                fi
+            fi
+        fi
+
+        if [[ $(substr st_buf -1) == ' ' ]] ; then
+            if [[ $c == [\-\!=] ]] ; then
+                push_state conditional_operator
+            fi
+        elif [[ $c == '\' ]] ; then
+            push_state escape
+        elif [[ $c == "'" ]] ; then
+            push_state apos
+        elif [[ $c == '"' ]] ; then
+            push_state quote
+        elif [[ $c == '(' ]] ; then
+            push_state parens
+        elif [[ $c == ')' && $(substr st_buf -1) == ')' ]] ; then
+            pop_state
+        elif [[ $c == ']' && $(substr st_buf -1) == ']' ]] ; then
+            pop_state
+        elif [[ $(substr st_buf -1) == ']' ]] ; then
+            err "unexpected character in conditional expression"
+        fi
+    elif (( st == conditional_operator )) ; then
+        if [[ $c == $LF || $c == ' ' ]] ; then
+            case $st_buf in
+            (-[abcdefghklnoprstuvwxzGLNORS]) ;;
+            (-ef|-eq|-ge|-gt|-le|-lt|-ne|-nt|-ot) ;;
+            (==|!=|!|\&\&|\|\|) ;;
+            (=~)
+                warning "regex operator"
+                ;;
+            (=)
+                warning "posix operator in non-posix conditional"
+                ;;
+            (*)
+                err "unrecognized operator"
+                ;;
+            esac
+
             pop_state
         fi
     elif (( st == directive )) ; then
@@ -649,7 +710,7 @@ function process_char() {
         elif [[ $c == [A-Za-z_] ]] ; then
             push_state expandvar
         else
-            err "unexpected character after: '$(substr st_buf -1)'"
+            err "unexpected token in parameter expansion"
         fi
     elif (( st == escape )) ; then
         push_buf "$c"
@@ -662,7 +723,7 @@ function process_char() {
         if (( st_charno == 1 )) && [[ $c != '[' ]] ; then
             pop_state
 
-            err "unexpected character in escape sequence: '$(substr st_buf -1)'"
+            err "unexpected character in escape sequence"
         elif [[ $c == 'm' ]] ; then
             pop_state
         fi
@@ -676,7 +737,7 @@ function process_char() {
         fi
     elif (( st == expandparam )) ; then
         if (( st_charno == 1 )) ; then
-            if [[ $c != [A-Za-z0-9_\!\#\*\@] ]] ; then
+            if [[ $c != [A-Za-z0-9_\!\*\@] && $c != '#' ]] ; then
                 err "malformed parameter expansion expression"
             fi
         elif (( st_charno == 2 )) && [[ $st_buf == [0-9] ]] ; then
@@ -718,7 +779,7 @@ function process_char() {
         if (( hd_inline == 0 )) ; then
             if [[ $c == '<' || $c == $'\n' ]] ; then
                 pop_state
-                err "unexpected character: '$c'"
+                err "unexpected character in inline heredoc"
             else
                 hd_inline=1
                 push_state parsing_string
@@ -728,7 +789,7 @@ function process_char() {
             pop_state
 
             if [[ $c == '<' ]] ; then
-                err "unexpected character: '$c'"
+                err "unexpected redirect in inline heredoc"
             fi
         fi
     elif (( st == heredoc_tag )) ; then
@@ -745,22 +806,6 @@ function process_char() {
 
         push_heredoc "$st_buf_prev"
         pop_state
-    elif (( st == logic )) ; then
-        if [[ $c == '\' ]] ; then
-            push_state escape
-        elif [[ $c == "'" ]] ; then
-            push_state apos
-        elif [[ $c == '"' ]] ; then
-            push_state quote
-        elif [[ $c == '(' ]] ; then
-            push_state parens
-        elif [[ $c == ')' && $(substr st_buf -1) == ')' ]] ; then
-            pop_state
-        elif [[ $c == ']' && $(substr st_buf -1) == ']' ]] ; then
-            pop_state
-        elif [[ $(substr st_buf -1) == ']' ]] ; then
-            err "unexpected character after: '$(substr st_buf -1)'"
-        fi
     elif (( st == number )) ; then
         if [[ $c != [0-9] ]] ; then
             pop_state
@@ -795,13 +840,26 @@ function process_char() {
         elif [[ $c == '`' ]] ; then
             push_state tick
         elif [[ $c == '"' ]] ; then
-            err "endquote: '${st_buf##*${LF}}'"
+            err "endquote"
             pop_state
         fi
     elif (( st == redirect_in )) ; then
         if [[ $c == '<' ]] ; then
             push_state heredoc_tag
         else
+            pop_state
+        fi
+    elif (( st == redirect_out )) ; then
+        if (( st_charno == 1 )) ; then
+            if [[ $c == '>' ]] ; then
+                # Append mode.
+                true
+            fi
+        elif (( st_charno == 2 )) ; then
+            if [[ $c == '>' ]] ; then
+                err "illegal redirect"
+            fi
+
             pop_state
         fi
     elif (( st == tick )) ; then
@@ -981,17 +1039,17 @@ while (( $# > 0 )) ; do
         err "Illegal option: $1"
         ;;
     (*)
-        break
+        files+=( "$1" )
         ;;
     esac
     shift
 done
 
-if (( $# == 0 )) ; then
+if (( ${#files[@]} == 0 )) ; then
     set -- /dev/stdin
 fi
 
-iter_files "$@" >"$output"
+iter_files "${files[@]}" >"$output"
 
 if (( errors != 0 )) ; then
     exit 1
