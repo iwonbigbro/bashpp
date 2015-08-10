@@ -7,7 +7,7 @@ set -euo pipefail
 bashpp=$(readlink -f "$BASH_SOURCE")
 bashpp_dir=${bashpp%/*}
 
-IFS=":" include_dir=( ${BASHINC:-} )
+BASHINC=${BASHINC:-}
 
 declare -A DEFS=()
 declare -A DEFNS=()
@@ -18,26 +18,60 @@ declare -A DIRS=(
 
 output="/dev/stdout"
 
-verbose=0
+VERBOSE=${VERBOSE:-0}
+DEBUG=${DEBUG:-0}
+
 errors=0
 warnings=0
-lineno=0
-charno=0
+lineno=1
+charno=1
+
+states=0
+while read state ; do
+    printf -v $state "%d" $states
+
+    (( ++states ))
+done <<STATES
+apos
+arithmetic
+bracket_s
+bracket_c
+comment
+directive
+directive_escape
+dollar
+escape
+expandbrace
+expandcmd
+expandparam
+expandvar
+logic
+number
+parens
+parsing
+quote
+word
+eof
+STATES
+
+unset state
+state_stack=( "eof" )
+state_stackbuf=()
+state_stacklen=0
+st_name=
+st_buf=
+st_buf_prev=
+st=-1
+
+flushbuf=0
+freezebuf=0
 
 file=
 line=
 buf=
-st=
 
 function aacpy() {
     declare -p $1 | sed 's?^[^=]\+=??'
-}
-
-function die() {
-    local funcname=${FUNCNAME[1]:-}
-
-    echo >&2 "${bashpp##*/}: error:${funcname:+ $funcname} $*"
-    exit 1
 }
 
 function msgtype_colour() {
@@ -48,6 +82,7 @@ function msgtype_colour() {
         (error)   on="[1m[38;5;167m" ;;
         (warning) on="[1m[38;5;213m" ;;
         (info)    on="[1m[38;5;106m" ;;
+        (debug)   on="[1m[38;5;105m" ;;
         esac
 
         off="[39m[0m"
@@ -56,13 +91,25 @@ function msgtype_colour() {
     printf "${on}%s${off}" "$1"
 }
 
+function bashpp_msg() {
+    local msgtype=$1
+    shift
+
+    local funcname=${FUNCNAME[1]:-main}
+
+    if [[ $funcname == +(msg|die|debug|info|warn) ]] ; then
+        funcname=${FUNCNAME[2]:-main}
+    fi
+
+    printf >&2 "${bashpp##*/}: $msgtype:${funcname:+ $funcname:} %s\n" "$*"
+}
+
 function msg() {
     local msgtype=$1
     shift
 
     if [[ ! $file ]] ; then
-        local funcname=${FUNCNAME[1]:-}
-        printf >&2 "${bashpp##*/}: $msgtype:${funcname:+ $funcname} %s\n" "$*"
+        bashpp_msg "$msgtype" "$*"
     elif [[ $file == "/dev/stdin" ]] ; then
         printf >&2 "<stdin>:$lineno:$charno $msgtype: %s\n" "$*"
     else
@@ -80,6 +127,18 @@ function err() {
     msg "$(msgtype_colour "error")" "$*"
 }
 
+function die() {
+    local funcname=${FUNCNAME[1]:-}
+          funcname=${funcname:+$funcname }
+
+    bashpp_msg "$(msgtype_colour "error")" "$*"
+    stacktrace
+
+    bashpp_msg "$(msgtype_colour "error")" "$*"
+
+    exit 1
+}
+
 function warn() {
     (( ++warnings ))
 
@@ -87,10 +146,32 @@ function warn() {
 }
 
 function info() {
-    if (( verbose )) ; then
+    if (( VERBOSE )) ; then
         msg "$(msgtype_colour "info")" "$*"
     fi
 }
+
+function debug() {
+    local funcname=${FUNCNAME[1]:-main}
+
+    if (( DEBUG )) ; then
+        msg "$(msgtype_colour "debug")" "$funcname(): $*"
+    fi
+}
+
+function stacktrace() {
+    local i=
+
+    printf >&2 "[1m[38;5;167mTraceback:[0m\n"
+
+    for (( i = 0 ; i < ${#BASH_SOURCE[@]} ; ++i )) ; do
+        printf "  [38;5;167m%s:%d: %s()[0m\n" \
+            "${BASH_SOURCE[i]}" "${BASH_LINENO[i]}" "${FUNCNAME[i]:-main}"
+    done
+}
+
+set -E
+trap "stacktrace" ERR
 
 function add_include_dir() {
     if [[ ! $1 ]] ; then
@@ -99,8 +180,8 @@ function add_include_dir() {
         die "No such directory: $1"
     fi
 
-    if [[ " ${include_dir[*]:-} " != *" $1 "* ]] ; then
-        include_dir+=( "$1" )
+    if [[ ":${BASHINC:-}:" != *":$1:"* ]] ; then
+        BASHINC+=":$1"
     fi
 }
 
@@ -149,16 +230,85 @@ function remove_define() {
     undef "$1"
 }
 
-parsing=0
-found_word=1
-found_directive=2
+function push_state() {
+    IFS=: debug "${state_stack[@]}:$st_name -> ${state_stack[@]}:$st_name:$1"
 
-function set_state() {
+    state_stackbuf+=( "$st_buf" )
+    state_stack+=( $st_name )
+
+    (( ++state_stacklen )) || true
+
     st=${!1}
+    st_name=$1
+    st_buf_prev=$st_buf
+    st_buf=
+}
+
+function pop_state() {
+    IFS=: debug "${state_stack[@]}:$st_name -> ${state_stack[@]}"
+
+    if (( ${#state_stack[@]} == 0 )) ; then
+        die "state_stack accounting error"
+    fi
+
+    st_name=${state_stack[-1]}
+    st_buf_prev=$st_buf
+    st_buf=${state_stackbuf[-1]}
+    st=${!st_name}
+
+    unset state_stack[-1]
+    unset state_stackbuf[-1]
+
+    (( --state_stacklen )) || true
+}
+
+function switch_state() {
+    IFS=: debug "${state_stack[@]}:$st_name -> ${state_stack[@]}:$1"
+
+    st=${!1}
+    st_name=$1
+}
+
+function freeze_buf() {
+    debug
+    freezebuf=1
+}
+
+function thaw_buf() {
+    debug
+    freezebuf=0
+}
+
+function push_buf() {
+    st_buf+=$1
+
+    if (( freezebuf == 1 )) ; then
+        debug "frozen: '$st_buf'"
+    else
+        buf+=$1
+
+        if (( flushbuf )) ; then
+            printf "%s" "$buf"
+
+            flushbuf=0
+            buf=
+        fi
+    fi
+}
+
+function flush_buf() {
+    if (( ${1:-0} )) ; then
+        printf "%s" "$buf"
+
+        flushbuf=0
+        buf=
+    else
+        flushbuf=1
+    fi
 }
 
 function process_define() {
-    local args=${line:$charno}
+    local args=$1
 
     if [[ $args =~ ^([A-Za-z_][A-Za-z0-9_]*)[\ \t]+(.*)$ ]] ; then
         define "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
@@ -171,129 +321,237 @@ function process_define() {
     fi
 
     err "illegal define: $line"
+
     return 1
 }
 
 function process_char() {
-    local c=$1 k= def=
+    local c=$1
 
-    if (( st == parsing )) ; then
-        if (( charno == 1 )) && [[ $c == '#' ]] ; then
-            set_state found_directive
-
-            buf+=$c
-            return
-
-        elif [[ $c == [A-Za-z_] ]] ; then
-            set_state found_word
-
-            buf+=$c
-            return
+    if (( st == apos )) ; then
+        if [[ $c == "'" ]] ; then
+            pop_state
+            flush_buf
         fi
-    fi
+    elif (( st == arithmetic )) ; then
+        if [[ $c == '\' ]] ; then
+            push_state escape
+        elif [[ $c == '(' ]] ; then
+            push_state parens
+        elif [[ $c == ')' && ${st_buf: -1} == ')' ]] ; then
+            pop_state
+        elif [[ ${st_buf: -1} == ')' ]] ; then
+            err "unmatched parenthesis"
+        fi
+    elif (( st == bracket_c )) ; then
+        if [[ $c == '\' ]] ; then
+            push_state escape
+        elif [[ $c == '}' ]] ; then
+            pop_state
+        fi
+    elif (( st == bracket_s )) ; then
+        if [[ $c == '\' ]] ; then
+            push_state escape
+        elif [[ $c == '[' ]] ; then
+            switch_state logic
+        elif [[ $c == ']' ]] ; then
+            pop_state
+        fi
+    elif (( st == comment )) ; then
+        if [[ $c == $'\n' ]] ; then
+            pop_state
+        fi
+    elif (( st == directive )) ; then
+        if (( charno == 2 )) && [[ $c != [a-z] ]] ; then
+            thaw_buf
+            switch_state comment
+            push_buf "$st_buf"
+        elif [[ $c == '\' ]] ; then
+            push_state directive_escape
+        elif [[ $c == $'\n' ]] ; then
+            thaw_buf
 
-    if (( st == found_directive )) ; then
-        if [[ $c == [A-Za-z_] ]] ; then
-            buf+=$c
-            return
+            local directive= directive_params=
 
-        elif [[ $buf ]] ; then
-            k=${buf//[#\t\ ]/}
+            read directive directive_params <<<"${st_buf:1}"
 
-            if [[ $k ]] ; then
-                def=${DIRS[$k]:-}
+            pop_state
 
-                if [[ $def ]] ; then
-                    if process_$k ; then
-                        set_state parsing
-
-                        buf=
-                        return 1
-                    fi
+            if (( ${DIRS[$directive]:-0} == 1 )) ; then
+                if process_$directive "$directive_params" ; then
+                    return 0
                 fi
-
-                err "invalid directive: $buf"
+            else
+                err "invalid directive: $directive"
             fi
 
-            printf "%s" "$buf"
-            buf=
+            push_buf "$st_buf_prev"
         fi
+    elif (( st == directive_escape )) ; then
+        pop_state
+        push_buf "\\$c"
+        return 0
 
-        set_state parsing
-    fi
+    elif (( st == dollar )) ; then
+        pop_state
 
-    if (( st == found_word )) ; then
-        if [[ $c == [A-Za-z_] ]] ; then
-            buf+=$c
-            return
+        if [[ $c == [*@\#\?\-\$\!0-9] ]] ; then
+            true
+        elif [[ $c == "'" ]] ; then
+            push_state apos
+        elif [[ $c == '"' ]] ; then
+            push_state quote
+        elif [[ $c == '{' ]] ; then
+            push_state expandparam
+        elif [[ $c == '(' ]] ; then
+            push_state expandcmd
+        elif [[ $c == [A-Za-z_] ]] ; then
+            push_state expandvar
+        else
+            die "bash syntax error: unexpected character '$c'"
+        fi
+    elif (( st == escape )) ; then
+        push_buf "$c"
+        pop_state
+        return 0
 
-        elif [[ $buf ]] ; then
-            def=${DEFS[$buf]:-}
-
-            if [[ $def ]] ; then
-                info "substituting '$buf' for '$def'"
-                buf=$def
+    elif (( st == expandcmd )) ; then
+        if (( ${#st_buf} == 1 )) && [[ $c == '(' ]] ; then
+            switch_state arithmetic
+        elif [[ $c == ')' ]] ; then
+            pop_state
+        fi
+    elif (( st == expandparam )) ; then
+        if (( ${#st_buf} == 1 )) ; then
+            if [[ $c != [A-Za-z0-9_] ]] ; then
+                err "malformed parameter expansion expression"
+            fi
+        elif (( ${#st_buf} == 2 )) && [[ $st_buf == [0-9] ]] ; then
+            if [[ $c != '}' ]] ; then
+                err "malformed parameter expansion expression"
             fi
 
-            printf "%s" "$buf"
-            buf=
-        fi
+        # TODO: Handle expressions.
 
-        set_state parsing
+        elif [[ $c == '}' ]] ; then
+            pop_state
+        fi
+    elif (( st == expandvar )) ; then
+        if [[ $c != [A-Za-z0-9_] ]] ; then
+            pop_state
+            process_char "$c"
+            return 0
+        fi
+    elif (( st == number )) ; then
+        if [[ $c != [0-9] ]] ; then
+            pop_state
+            process_char "$c"
+            return 0
+        fi
+    elif (( st == parens )) ; then
+        if [[ $c == '\' ]] ; then
+            push_state escape
+        elif [[ $c == '(' ]] ; then
+            switch_state arithmetic
+        elif [[ $c == ')' ]] ; then
+            pop_state
+        fi
+    elif (( st == parsing )) ; then
+        if [[ $c == '#' ]] ; then
+            if (( charno == 1 )) ; then
+                push_state directive
+                freeze_buf
+            else
+                push_state comment
+            fi
+        elif [[ $c == '$' ]] ; then
+            push_state dollar
+        elif [[ $c == '(' ]] ; then
+            push_state parens
+        elif [[ $c == '{' ]] ; then
+            push_state bracket_c
+        elif [[ $c == '[' ]] ; then
+            push_state bracket_s
+        elif [[ $c == '"' ]] ; then
+            push_state quote
+        elif [[ $c == "'" ]] ; then
+            push_state apos
+        elif [[ $c == [A-Za-z_] ]] ; then
+            push_state word
+        fi
+    elif (( st == quote )) ; then
+        if [[ $c == '\' ]] ; then
+            push_state escape
+        elif [[ $c == '$' ]] ; then
+            push_state dollar
+        elif [[ $c == '"' ]] ; then
+            pop_state
+        fi
+    elif (( st == word )) ; then
+        if [[ $c != [0-9A-Za-z] ]] ; then
+            pop_state
+            process_char "$c"
+            return 0
+        fi
     fi
 
-    printf "%s" "$c"
-}
-
-function process_line() {
-    local curcharno=$charno
-    local i= c=
-
-    charno=0
-
-    for (( i = 0 ; i < ${#line} ; ++i )) ; do
-        (( ++charno ))
-
-        if ! process_char "${line:$i:1}" ; then
-            break
-        fi
-    done
-    process_char $'\n'
-
-    charno=$curcharno
-}
-
-function iter_lines() {
-    local curlineno=$lineno
-    local curline=$line
-    local curbuf=$buf
-    local curst=$st
-
-    lineno=0
-    buf=
-
-    set_state parsing
-
-    while IFS=$'\x00' read -r line ; do
-        (( ++lineno ))
-
-        process_line
-    done <"$file"
-
-    st=$curst
-    buf=$curbuf
-    line=$curline
-    lineno=$curlineno
+    push_buf "$c"
 }
 
 function iter_files() {
-    local curfile=$file
+    local file=
 
     for file in "$@" ; do
-        iter_lines
+        iter_file <"$file"
+        flush_buf 1
+    done
+}
+
+function iter_file() {
+    push_state parsing
+
+    while getc c ; do
+        if ! process_char "$c" ; then
+            break
+        fi
+
+        if [[ $c == $'\n' ]] ; then
+            (( ++lineno ))
+            charno=1
+        else
+            (( ++charno ))
+        fi
     done
 
-    file=$curfile
+    pop_state
+
+    if (( st != eof )) ; then
+        err "unexpected EOF"
+    fi
+}
+
+getc_bufsize=4096
+getc_buflen=0
+getc_offset=0
+getc_eof=0
+
+function getc() {
+    if (( getc_offset == getc_buflen )) ; then
+        if (( getc_eof )) ; then
+            return 1
+        fi
+
+        if ! read -r -N $getc_bufsize getc_buf ; then
+            getc_eof=1
+        fi
+
+        getc_buflen=${#getc_buf}
+        getc_offset=0
+    fi
+
+    printf -v $1 "%c" "${getc_buf:${getc_offset}:1}"
+
+    (( ++getc_offset ))
 }
 
 function usage() {
@@ -318,7 +576,9 @@ Options:
 
   -o file               Place the output into <file>
 
-  -v                    Verbose mode.
+  -v --verbose          Verbose mode.
+
+     --debug            Enable debugging information.
 
 Arguments:
     file                Specify an input file.  By default, input is read from
@@ -358,8 +618,11 @@ while (( $# > 0 )) ; do
     (-o*)
         output=$(readlink -m "${1#-o}")
         ;;
-    (-v)
-        (( ++verbose ))
+    (-v|--verbose)
+        (( ++VERBOSE ))
+        ;;
+    (--debug)
+        (( ++DEBUG ))
         ;;
     (-\?|--help)
         usage
