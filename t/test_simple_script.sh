@@ -17,5 +17,5 @@ myprogram=$(readlink -f "$BASH_SOURCE")
 exit 0
 SCRIPT
 
-bashpp $script >$script.a
+bash ${bash_opts:-} bashpp $script >$script.a
 diff -U3 $script $script.a

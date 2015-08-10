@@ -8,5 +8,5 @@ script=$(mktemp)
 trap "rm -f $script" EXIT
 
 cat $(which bashpp) >$script
-bashpp $script >$script.a
+bash ${bash_opts:-} bashpp $script >$script.a
 diff $script $script.a

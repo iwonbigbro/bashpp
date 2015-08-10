@@ -23,5 +23,5 @@ cat >$script.e <<'EXPECTED'
 1
 EXPECTED
 
-bashpp $script >$script.a
+bash ${bash_opts:-} bashpp $script >$script.a
 diff -U3 $script.e $script.a
