@@ -10,7 +10,7 @@ bashpp_dir=${bashpp%/*}
 BASHINC=${BASHINC:-}
 
 declare -A DEFS=()
-declare -A DEFNS=()
+declare -A MACROS=()
 declare -A DIRS=(
     ["define"]=1
     ["undef"]=1
@@ -41,10 +41,13 @@ directive
 directive_escape
 dollar
 escape
+escape_sequence
 expandbrace
 expandcmd
 expandparam
 expandvar
+heredoc
+heredoc_start
 logic
 number
 parens
@@ -62,6 +65,9 @@ st_name=
 st_buf=
 st_buf_prev=
 st=-1
+
+heredoc_tag=
+heredoc_type=
 
 flushbuf=0
 freezebuf=0
@@ -164,14 +170,18 @@ function stacktrace() {
 
     printf >&2 "[1m[38;5;167mTraceback:[0m\n"
 
-    for (( i = 0 ; i < ${#BASH_SOURCE[@]} ; ++i )) ; do
-        printf "  [38;5;167m%s:%d: %s()[0m\n" \
-            "${BASH_SOURCE[i]}" "${BASH_LINENO[i]}" "${FUNCNAME[i]:-main}"
+    if (( $# )) ; then
+        printf >&2 "  [38;5;167m%s:%d: %s()[0m\n" "$@"
+    fi
+
+    for (( i = 1 ; i < ${#BASH_LINENO[@]} ; ++i )) ; do
+        printf >&2 "  [38;5;167m%s:%d: %s()[0m\n" \
+            "${BASH_SOURCE[i+1]:-$BASH_SOURCE}" "${BASH_LINENO[i]}" "${FUNCNAME[i]}"
     done
 }
 
 set -E
-trap "stacktrace" ERR
+trap 'stacktrace "$BASH_SOURCE" "$LINENO" "${FUNCNAME:-main}"' ERR
 
 function add_include_dir() {
     if [[ ! $1 ]] ; then
@@ -187,6 +197,14 @@ function add_include_dir() {
 
 function definefn() {
     err "macro functions currently not supported"
+}
+
+function is_define() {
+    (( ${#DEFS[$1]:-} > 0 ))
+}
+
+function is_macro() {
+    (( ${#MACROS[$1]:-} > 0 ))
 }
 
 function define() {
@@ -212,7 +230,7 @@ function undef() {
     info "-U $1"
 
     unset DEFS[$1]
-    unset DEFNS[$1]
+    unset MACROS[$1]
 }
 
 function add_define() {
@@ -287,7 +305,7 @@ function push_buf() {
     else
         buf+=$1
 
-        if (( flushbuf )) ; then
+        if (( flushbuf || ${#buf} > 4096 )) ; then
             printf "%s" "$buf"
 
             flushbuf=0
@@ -328,10 +346,16 @@ function process_define() {
 function process_char() {
     local c=$1
 
+    if [[ $c == '' ]] ; then
+        push_state escape_sequence
+        push_buf "$c"
+
+        return 0
+    fi
+
     if (( st == apos )) ; then
         if [[ $c == "'" ]] ; then
             pop_state
-            flush_buf
         fi
     elif (( st == arithmetic )) ; then
         if [[ $c == '\' ]] ; then
@@ -390,8 +414,8 @@ function process_char() {
     elif (( st == directive_escape )) ; then
         pop_state
         push_buf "\\$c"
+        
         return 0
-
     elif (( st == dollar )) ; then
         pop_state
 
@@ -408,13 +432,25 @@ function process_char() {
         elif [[ $c == [A-Za-z_] ]] ; then
             push_state expandvar
         else
-            die "bash syntax error: unexpected character '$c'"
+            err "unexpected character after: '${st_buf: -1}'"
         fi
     elif (( st == escape )) ; then
         push_buf "$c"
         pop_state
-        return 0
 
+        return 0
+    elif (( st == escape_sequence )) ; then
+        push_buf "$c"
+
+        if (( charno == 1 )) && [[ $c != '[' ]] ; then
+            pop_state
+
+            err "unexpected character after: '${st_buf: -1}'"
+        elif [[ $c == 'm' ]] ; then
+            pop_state
+        fi
+
+        return 0
     elif (( st == expandcmd )) ; then
         if (( ${#st_buf} == 1 )) && [[ $c == '(' ]] ; then
             switch_state arithmetic
@@ -440,12 +476,46 @@ function process_char() {
         if [[ $c != [A-Za-z0-9_] ]] ; then
             pop_state
             process_char "$c"
+
             return 0
+        fi
+    elif (( st == heredoc )) ; then
+        true
+    elif (( st == heredoc_start )) ; then
+        if [[ $c == '\' ]] ; then
+            push_state escape
+        elif [[ $c == "'" ]] ; then
+            push_state apos
+
+            heredoc_type=$apos
+        elif [[ $c == '"' ]] ; then
+            push_state quote
+        elif [[ $c == [\ \t] ]] ; then
+            heredoc_tag=${st_buf//[\"\']/}
+        fi
+    elif (( st == logic )) ; then
+        if [[ $c == '\' ]] ; then
+            push_state escape
+        elif [[ $c == "'" ]] ; then
+            push_state apos
+        elif [[ $c == '"' ]] ; then
+            push_state quote
+        elif [[ $c == '(' ]] ; then
+            push_state parens
+        elif [[ $c == ')' && ${st_buf: -1} == ')' ]] ; then
+            pop_state
+        elif [[ $c == ']' && ${st_buf: -1} == ']' ]] ; then
+            pop_state
+        elif [[ ${st_buf: -1} == ']' ]] ; then
+            err "unexpected character after: '${st_buf: -1}'"
+        elif [[ ${st_buf: -1} == ')' ]] ; then
+            err "unmatched parenthesis"
         fi
     elif (( st == number )) ; then
         if [[ $c != [0-9] ]] ; then
             pop_state
             process_char "$c"
+
             return 0
         fi
     elif (( st == parens )) ; then
@@ -478,6 +548,7 @@ function process_char() {
             push_state apos
         elif [[ $c == [A-Za-z_] ]] ; then
             push_state word
+            freeze_buf
         fi
     elif (( st == quote )) ; then
         if [[ $c == '\' ]] ; then
@@ -488,10 +559,23 @@ function process_char() {
             pop_state
         fi
     elif (( st == word )) ; then
-        if [[ $c != [0-9A-Za-z] ]] ; then
+        if [[ $c != [0-9A-Za-z_] ]] ; then
             pop_state
+            thaw_buf
+
+            if is_define "$st_buf_prev" ; then
+                push_buf "${DEFS[$st_buf_prev]}"
+            else
+                push_buf "$st_buf_prev"
+            fi
+
             process_char "$c"
+
             return 0
+        fi
+    elif (( st == parse_until )) ; then
+        if [[ $c == "$parse_until_char" ]] ; then
+            pop_state
         fi
     fi
 
@@ -643,3 +727,7 @@ if (( $# == 0 )) ; then
 fi
 
 iter_files "$@" >"$output"
+
+if (( errors != 0 )) ; then
+    exit 1
+fi
