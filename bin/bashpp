@@ -4,6 +4,8 @@
 
 set -euo pipefail
 
+exec 100<&0
+
 bashpp=$(readlink -f "$BASH_SOURCE")
 bashpp_dir=${bashpp%/*}
 
@@ -26,6 +28,7 @@ ERROR_MAX=${ERROR_MAX:-10}
 BUF_MAX=${BUF_MAX:-4096}
 FILE_MAX=${FILE_MAX:-0}
 
+OUTPUT_LINES=0
 SECONDS=0
 
 if (( BUF_MAX > FILE_MAX )) ; then
@@ -38,6 +41,27 @@ LF=$'\n'
 errors=0
 warnings=0
 stacktrace_frames=0
+msg_lines=0
+
+tty_stdout=0
+tty_stderr=0
+tty_stdin=0
+tty=0
+
+if [[ -t 0 ]] ; then
+    tty_stdin=1
+    tty=1
+fi
+
+if [[ -t 1 ]] ; then
+    tty_stdout=1
+    tty=1
+fi
+
+if [[ -t 2 ]] ; then
+    tty_stderr=1
+    tty=1
+fi
 
 lineno=1
 charno=1
@@ -69,6 +93,7 @@ heredoc_tagged
 heredoc
 conditional
 conditional_operator
+conditional_regex
 number
 parens
 parsing
@@ -115,7 +140,7 @@ function msgtype_colour() {
     local tag=$1
     local on= off=
 
-    if [[ -t 2 ]] ; then
+    if (( tty )) ; then
         case $1 in
         (stop*)      on="[1m[38;5;124m" ;;
         (error*)     on="[1m[38;5;167m" ;;
@@ -136,7 +161,7 @@ function bashpp_msg() {
 
     local funcname=${FUNCNAME[1]:-main}
 
-    if [[ $funcname == +(msg|die|debug|info|warn) ]] ; then
+    if [[ $funcname == +(msg|die|debug|info|warn)* ]] ; then
         funcname=${FUNCNAME[2]:-main}
     fi
 
@@ -206,9 +231,11 @@ function err() {
         die "$@"
     fi
 
-    msg "error" "$*"
+    (( ++errors )) || true
 
-    if (( ++errors >= ERROR_MAX )) ; then
+    msg "error" "$errors: $*"
+
+    if (( errors >= ERROR_MAX )) ; then
         local p=$(( ( fileoffset * 100 ) / filesize ))
 
         msg "stop" "stopping at ${p}%, too many errors"
@@ -264,10 +291,24 @@ function info() {
 
 function debug() {
     if (( DEBUG )) ; then
+        if (( DEBUG_LINENO > 0 && lineno < DEBUG_LINENO )) ; then
+            return
+        fi
+
         msg "debug" "${FUNCNAME[1]:-main}(): $*"
-    elif (( DEBUG_LINENO > 0 && lineno > DEBUG_LINENO )) ; then
-        DEBUG=1
-        debug "$@"
+    fi
+}
+
+function debug_l() {
+    if (( DEBUG > $1 )) ; then
+        local l=$1
+        shift
+
+        if (( DEBUG_LINENO > 0 && lineno < DEBUG_LINENO )) ; then
+            return
+        fi
+
+        msg "debug_$l" "${FUNCNAME[1]:-main}(): $*"
     fi
 }
 
@@ -381,7 +422,7 @@ function remove_define() {
 
 function push_state() {
     local char=${c:-}
-    debug "$st_name -> $1: '${buf##*${LF}}${c:-}'"
+    debug "$st_name -> $1: '${st_buf##*${LF}}${c:-}'"
 
     state_stackbuf+=( "$st_buf" )
     state_stack+=( $st_name )
@@ -404,7 +445,7 @@ function pop_state() {
     local i=$state_stacklen
     (( --i )) || true
 
-    debug "$st_name -> ${state_stack[i]}: '${buf##*${LF}}${c:-}'"
+    debug "$st_name -> ${state_stack[i]}: '${st_buf##*${LF}}${c:-}'"
 
     st_name=${state_stack[i]}
     st_buf_prev=$st_buf
@@ -419,7 +460,7 @@ function pop_state() {
 }
 
 function switch_state() {
-    debug "$st_name -> $1: '${buf##*${LF}}${c:-}'"
+    debug "$st_name -> $1: '${st_buf##*${LF}}${c:-}'"
 
     st=${!1}
     st_name=$1
@@ -590,6 +631,8 @@ function process_char_state_parsing() {
 function process_char() {
     local c=$1
 
+    debug_l 2 "$c"
+
     if (( st == apos )) ; then
         if [[ $c == "'" ]] ; then
             pop_state
@@ -625,7 +668,7 @@ function process_char() {
     elif (( st == conditional )) ; then
         if (( st_charno == 1 )) ; then
             if [[ $c != ' ' ]] ; then
-                warning "missing whitespace in conditional expression"
+                warn "missing whitespace in conditional expression"
 
                 if [[ $c == [\-=\!\<\>] ]] ; then
                     push_state conditional_operator
@@ -633,10 +676,8 @@ function process_char() {
             fi
         fi
 
-        if [[ $(substr st_buf -1) == ' ' ]] ; then
-            if [[ $c == [\-\!=] ]] ; then
-                push_state conditional_operator
-            fi
+        if [[ $(substr st_buf -1) == ' ' && $c == [\-\!=] ]] ; then
+            push_state conditional_operator
         elif [[ $c == '\' ]] ; then
             push_state escape
         elif [[ $c == "'" ]] ; then
@@ -649,8 +690,6 @@ function process_char() {
             pop_state
         elif [[ $c == ']' && $(substr st_buf -1) == ']' ]] ; then
             pop_state
-        elif [[ $(substr st_buf -1) == ']' ]] ; then
-            err "unexpected character in conditional expression"
         fi
     elif (( st == conditional_operator )) ; then
         if [[ $c == $LF || $c == ' ' ]] ; then
@@ -659,17 +698,35 @@ function process_char() {
             (-ef|-eq|-ge|-gt|-le|-lt|-ne|-nt|-ot) ;;
             (==|!=|!|\&\&|\|\||\|\&) ;;
             (=~)
-                warning "regex operator"
+                push_buf "$c"
+                switch_state conditional_regex
+
+                return 0
                 ;;
             (=)
-                warning "posix operator in non-posix conditional"
+                warn "posix operator in non-posix conditional"
                 ;;
             (*)
-                err "unrecognized operator"
+                err "unrecognized operator: '$st_buf'"
                 ;;
             esac
 
             pop_state
+            process_char "$c"
+
+            return 0
+        fi
+    elif (( st == conditional_regex )) ; then
+        if [[ $c == '\' ]] ; then
+            push_state escape
+        elif [[ $c == $LF ]] ; then
+            err "unexpected new-line in regular expression"
+            pop_state
+        elif [[ $c == ' ' ]] ; then
+            pop_state
+            process_char "$c"
+
+            return 0
         fi
     elif (( st == directive )) ; then
         if (( st_charno == 2 )) && [[ $c != [a-z] ]] ; then
@@ -740,8 +797,10 @@ function process_char() {
             fi
         fi
 
-        pop_state
         warn "unexpected character in escape sequence"
+
+        pop_state
+        process_char "$c"
 
         return 0
     elif (( st == expandcmd )) ; then
@@ -855,7 +914,7 @@ function process_char() {
         elif [[ $c == '`' ]] ; then
             push_state tick
         elif [[ $c == '"' ]] ; then
-            err "endquote"
+            #err "endquote"
             pop_state
         fi
     elif (( st == redirect_in )) ; then
@@ -949,7 +1008,7 @@ function iter_file() {
     flush_buf 1
 
     if (( st != eof )) ; then
-        err "unexpected EOF"
+        die "unexpected EOF"
     fi
 }
 
@@ -973,6 +1032,8 @@ function getc() {
     fi
 
     printf -v $1 "%c" "${getc_buf:$getc_offset:1}"
+
+    debug_l 2 "${!1}"
 
     (( ++getc_offset ))
 }
@@ -1001,7 +1062,9 @@ Options:
 
   -v --verbose          Verbose mode.
 
-     --debug            Enable debugging information.
+  -d --debug            Enable debugging information.
+
+     --debug-level #    Set the debug level to #, default is $DEBUG.
 
      --debug-from #     Enable debugging information on and after line number #
                         in the source file.
@@ -1050,15 +1113,26 @@ while (( $# > 0 )) ; do
     (-v|--verbose)
         (( ++VERBOSE ))
         ;;
-    (--debug)
+    (-d|--debug)
         (( ++DEBUG ))
+        ;;
+    (--debug-level)
+        DEBUG=$2
+        shift
+        ;;
+    (--debug-level=*)
+        DEBUG=${1#*=}
         ;;
     (--debug-from)
         DEBUG_LINENO=$2
         shift
+
+        set -- "$@" --debug
         ;;
     (--debug-from=*)
         DEBUG_LINENO=${1#*=}
+
+        set -- "$@" --debug
         ;;
     (--max-errors)
         ERROR_MAX=$2
