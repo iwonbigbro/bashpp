@@ -40,7 +40,6 @@ LF=$'\n'
 
 errors=0
 warnings=0
-stacktrace_frames=0
 msg_lines=0
 
 tty_stdout=0
@@ -244,19 +243,31 @@ function err() {
 }
 
 function stacktrace() {
-    printf >&2 "[1m[38;5;167mTraceback:[0m\n"
+    local i=-1 total=0
 
     if (( $# )) ; then
+        printf >&2 "[1m[38;5;167mTraceback:[0m\n"
         printf >&2 "  [38;5;167m%s:%d: %s()[0m\n" "$@"
+
+        (( ++total )) || true
     fi
 
-    stacktrace_frames=-1
 
-    while (( ++stacktrace_frames < ${#BASH_LINENO[@]} )) ; do
+    while (( ++i < ${#BASH_LINENO[@]} )) ; do
+        if [[ ${FUNCNAME[i]} == +(main|die|stacktrace) ]] ; then
+            continue
+        elif [[ ! ${FUNCNAME[i]} ]] ; then
+            continue
+        fi
+
+        if (( ++total == 1 )) ; then
+            printf >&2 "[1m[38;5;167mTraceback:[0m\n"
+        fi
+
         printf >&2 "  [38;5;167m%s:%d: %s()[0m\n" \
-            "${BASH_SOURCE[stacktrace_frames+1]:-$BASH_SOURCE}" \
-            "${BASH_LINENO[stacktrace_frames]}" \
-            "${FUNCNAME[stacktrace_frames]}"
+            "${BASH_SOURCE[i+1]:-$BASH_SOURCE}" \
+            "${BASH_LINENO[i]}" \
+            "${FUNCNAME[i]}"
     done
 }
 
@@ -1146,7 +1157,7 @@ while (( $# > 0 )) ; do
         exit 0
         ;;
     (-*)
-        err "Illegal option: $1"
+        die "illegal option: $1"
         ;;
     (*)
         files+=( "$1" )
