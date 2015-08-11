@@ -20,6 +20,7 @@ output="/dev/stdout"
 
 VERBOSE=${VERBOSE:-0}
 DEBUG=${DEBUG:-0}
+DEBUG_LINENO=${DEBUG_LINENO:-0}
 ERROR_LINE=${ERROR_LINE:-1}
 ERROR_MAX=${ERROR_MAX:-10}
 BUF_MAX=${BUF_MAX:-4096}
@@ -116,6 +117,7 @@ function msgtype_colour() {
 
     if [[ -t 2 ]] ; then
         case $1 in
+        (stop*)      on="[1m[38;5;124m" ;;
         (error*)     on="[1m[38;5;167m" ;;
         (warning*)   on="[1m[38;5;213m" ;;
         (info*)      on="[1m[38;5;106m" ;;
@@ -125,7 +127,7 @@ function msgtype_colour() {
         off="[39m[0m"
     fi
 
-    printf "${on}%s${off}" "${tag%stop}"
+    printf "${on}%s${off}" "$tag"
 }
 
 function bashpp_msg() {
@@ -177,7 +179,7 @@ function msg() {
     if [[ ! ${file:-} ]] ; then
         bashpp_msg "$msgtype_colour" "$*"
     else
-        if [[ $msgtype != +(error|warn) ]] ; then
+        if [[ $msgtype != +(error|warning) ]] ; then
             show_errorline=0
         fi
             
@@ -209,7 +211,7 @@ function err() {
     if (( ++errors >= ERROR_MAX )) ; then
         local p=$(( ( fileoffset * 100 ) / filesize ))
 
-        msg "errorstop" "stopping at ${p}%, too many errors"
+        msg "stop" "stopping at ${p}%, too many errors"
         exit 1
     fi
 }
@@ -261,10 +263,11 @@ function info() {
 }
 
 function debug() {
-    local funcname=${FUNCNAME[1]:-main}
-
     if (( DEBUG )) ; then
-        msg "debug" "$funcname(): $*"
+        msg "debug" "${FUNCNAME[1]:-main}(): $*"
+    elif (( DEBUG_LINENO > 0 && lineno > DEBUG_LINENO )) ; then
+        DEBUG=1
+        debug "$@"
     fi
 }
 
@@ -485,8 +488,6 @@ function thaw_buf() {
 function push_buf() {
     st_buf+=$1
 
-    (( ++st_charno ))
-
     if (( SECONDS > 0 )) ; then
         local p=$(( ( fileoffset * 100 ) / filesize ))
 
@@ -543,6 +544,17 @@ function process_define() {
     return 1
 }
 
+function check_escape_sequence() {
+    if [[ $c == '' ]] ; then
+        push_state escape_sequence
+        push_buf "$c"
+
+        return 0
+    fi
+
+    return 1
+}
+
 function process_char_state_parsing() {
     if [[ $c == '#' ]] ; then
         if (( charno == 1 )) ; then
@@ -578,16 +590,11 @@ function process_char_state_parsing() {
 function process_char() {
     local c=$1
 
-    if [[ $c == '' ]] ; then
-        push_state escape_sequence
-        push_buf "$c"
-
-        return 0
-    fi
-
     if (( st == apos )) ; then
         if [[ $c == "'" ]] ; then
             pop_state
+        elif check_escape_sequence ; then
+            return 0
         fi
     elif (( st == arithmetic )) ; then
         if [[ $c == '\' ]] ; then
@@ -650,7 +657,7 @@ function process_char() {
             case $st_buf in
             (-[abcdefghklnoprstuvwxzGLNORS]) ;;
             (-ef|-eq|-ge|-gt|-le|-lt|-ne|-nt|-ot) ;;
-            (==|!=|!|\&\&|\|\|) ;;
+            (==|!=|!|\&\&|\|\||\|\&) ;;
             (=~)
                 warning "regex operator"
                 ;;
@@ -720,13 +727,21 @@ function process_char() {
     elif (( st == escape_sequence )) ; then
         push_buf "$c"
 
-        if (( st_charno == 1 )) && [[ $c != '[' ]] ; then
-            pop_state
-
-            err "unexpected character in escape sequence"
-        elif [[ $c == 'm' ]] ; then
-            pop_state
+        if (( st_charno == 2 )) ; then
+            if [[ $c == '[' ]] ; then
+                return 0
+            fi
+        else
+            if [[ $c == [0-9\;] ]] ; then
+                return 0
+            elif [[ $c == 'm' ]] ; then
+                pop_state
+                return 0
+            fi
         fi
+
+        pop_state
+        warn "unexpected character in escape sequence"
 
         return 0
     elif (( st == expandcmd )) ; then
@@ -922,6 +937,7 @@ function iter_file() {
             charno=1
         else
             (( ++charno ))
+            (( ++st_charno ))
         fi
 
         if [[ $c == $'\n' ]] ; then
@@ -987,6 +1003,12 @@ Options:
 
      --debug            Enable debugging information.
 
+     --debug-from #     Enable debugging information on and after line number #
+                        in the source file.
+
+     --max-errors #     Maximum number of errors permitted before stopping.  The
+                        default is $ERROR_MAX.
+
 Arguments:
     file                Specify an input file.  By default, input is read from
                         standard input.
@@ -1030,6 +1052,20 @@ while (( $# > 0 )) ; do
         ;;
     (--debug)
         (( ++DEBUG ))
+        ;;
+    (--debug-from)
+        DEBUG_LINENO=$2
+        shift
+        ;;
+    (--debug-from=*)
+        DEBUG_LINENO=${1#*=}
+        ;;
+    (--max-errors)
+        ERROR_MAX=$2
+        shift
+        ;;
+    (--max-errors=*)
+        ERROR_MAX=${1#*=}
         ;;
     (-\?|--help)
         usage
