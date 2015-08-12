@@ -95,12 +95,16 @@ heredoc_stack=( "<empty>" )
 heredoc_stacktype=( "<empty>" )
 heredoc_stacklen=0
 hd_inline=0
-hd_type=
+hd_type="<empty>"
 hd_buf=
-hd=
+hd="<empty>"
 
 flushbuf=0
 freezebuf=0
+freezebuf_stack=()
+freezebuf_stacklen=0
+freezebuf_buf=
+thawed_buf=
 
 files=()
 filesize=
@@ -530,8 +534,8 @@ function pop_state() {
         die "state_stack accounting error"
     fi
 
-    # For compatibility with Bash versions < 4.2
     local i=$state_stacklen
+
     (( --i )) || true
 
     debug_state_change "${state_stack[i]}"
@@ -558,13 +562,18 @@ function switch_state() {
 function push_heredoc() {
     debug "$hd -> $1"
 
-    if [[ $1 == "'"*"'" ]] ; then
+    if [[ $1 =~ ^\'(.+)\'$ ]] ; then
         hd_type=$apos
+        hd=${BASH_REMATCH[1]}
     else
         hd_type=$quote
-    fi
 
-    hd=$1
+        if [[ $1 =~ ^\"(.+)\"$ ]] ; then
+            hd=${BASH_REMATCH[1]}
+        else
+            hd=$1
+        fi
+    fi
 
     heredoc_stacktype+=( "$hd_type" )
     heredoc_stack+=( $hd )
@@ -579,11 +588,10 @@ function pop_heredoc() {
 
     local cur_hd=$hd
 
-    # For compatibility with Bash versions < 4.2
     local i=$heredoc_stacklen
 
-    hd=${heredoc_stack[i]}
-    hd_type=${heredoc_stacktype[i]}
+    hd=${heredoc_stack[i-1]}
+    hd_type=${heredoc_stacktype[i-1]}
 
     unset heredoc_stack[i]
     unset heredoc_stackbuf[i]
@@ -601,23 +609,26 @@ function pop_heredoc() {
 
 function freeze_buf() {
     debug
+
+    freezebuf_stack+=( "${freezebuf_buf}" )
     freezebuf_buf=
 
-    if (( freezebuf )) ; then
-        die "attempted to refreeze buffer"
-    fi
-
-    freezebuf=1
+    (( ++freezebuf ))
 }
 
 function thaw_buf() {
-    debug "${#freezebuf_buf} bytes thawed"
-
     if (( ! freezebuf )) ; then
-        die "attempted to rethaw buffer"
+        die "attempted to thaw empty freeze buffer"
     fi
 
-    freezebuf=0
+    (( --freezebuf ))
+
+    thawed_buf=$freezebuf_buf
+    freezebuf_buf=${freezebuf_stack[freezebuf]}
+
+    unset freezebuf_stack[freezebuf]
+
+    debug "${#thawed_buf} bytes thawed"
 }
 
 function push_buf() {
@@ -667,7 +678,7 @@ function flush_buf() {
     fi
 }
 
-function process_define() {
+function process_directive_define() {
     local args=$1
 
     if [[ $args =~ ^([A-Za-z_][A-Za-z0-9_]*)[\ \t]+(.*)$ ]] ; then
@@ -802,26 +813,26 @@ function process_char_state_directive() {
     if (( st_charno == 2 )) && [[ $c != [a-z] ]] ; then
         thaw_buf
         switch_state comment
-        push_buf "$freezebuf_buf"
+        push_buf "$thawed_buf"
 
         return $RET_PROCHR_CONT
     elif [[ $c == [$CRLF] ]] ; then
         thaw_buf
 
         local directive= directive_params=
-        read directive directive_params <<<"${freezebuf_buf:1}"
+        read directive directive_params <<<"${thawed_buf:1}"
 
         pop_state
 
         if (( ${DIRS[$directive]:-0} == 1 )) ; then
-            if process_dir_$directive "$directive_params" ; then
+            if process_directive_$directive "$directive_params" ; then
                 return 0
             fi
         else
             err "invalid directive: $directive"
         fi
 
-        push_buf "$freezebuf_buf"
+        push_buf "$thawed_buf"
     fi
 }
 
@@ -956,23 +967,27 @@ function process_char_state_heredoc_tag() {
 
     if [[ $c == '<' ]] ; then
         push_state heredoc_inline
-        push_state parsing_string
+        freeze_buf
+        push_state heredoc_tagging
 
         return 0
     fi
 
     push_state heredoc_tagged
+    freeze_buf
     push_state parsing_string
 
     return $RET_PROCHR_CONT
 }
 
 function process_char_state_heredoc_tagged() {
-    if [[ $st_buf_prev == *[$CRLF]* ]] ; then
-        warn "heredocument tag contains new-line: ${st_buf_prev//[$CRLF]/\\n}"
+    thaw_buf
+
+    if [[ $thawed_buf == *[$CRLF]* ]] ; then
+        warn "heredocument tag contains new-line: ${thawed_buf//[$CRLF]/\\n}"
     fi
 
-    push_heredoc "$st_buf_prev"
+    push_heredoc "$thawed_buf"
     pop_state
 }
 
@@ -1024,7 +1039,6 @@ function process_char_state_parsing() {
         push_state redirect_out
     elif [[ $c == [A-Za-z_] ]] ; then
         push_state word
-        freeze_buf
     fi
 }
 
@@ -1106,16 +1120,17 @@ function process_char_state_tick() {
 
 function process_char_state_word() {
     if [[ $c != [0-9A-Za-z_] ]] ; then
+        local word=$st_buf
+
         pop_state
-        thaw_buf
 
-        debug "word = '$freezebuf_buf'"
+        debug "word = '$word'"
 
-        if is_define "$freezebuf_buf" ; then
-            debug "substituting '$freezebuf_buf' with '${DEFS[$freezebuf_buf]}'"
-            push_buf "${DEFS[$freezebuf_buf]}"
+        if is_define "$word" ; then
+            debug "substituting '$word' with '${DEFS[$word]}'"
+            push_buf "${DEFS[$word]}"
         else
-            push_buf "$freezebuf_buf"
+            push_buf "$word"
         fi
 
         return $RET_PROCHR_CONT
