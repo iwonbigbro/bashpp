@@ -324,7 +324,9 @@ function debug_l() {
         local l=$1
         shift
 
-        if (( DEBUG_LINENO > 0 && lineno < DEBUG_LINENO )) ; then
+        if (( DEBUG_STATES_FLAG == 1 )) ; then
+            return
+        elif (( DEBUG_LINENO > 0 && lineno < DEBUG_LINENO )) ; then
             return
         fi
 
@@ -429,6 +431,8 @@ function configure_states() {
 
     if (( ${#DEBUG_STATES} > 0 )) ; then
         DEBUG_STATES_FLAG=1
+        DEBUG=1
+    elif (( DEBUG_LINENO > 0 )) ; then
         DEBUG=1
     fi
 }
@@ -968,7 +972,7 @@ function process_char_state_heredoc_tag() {
     if [[ $c == '<' ]] ; then
         push_state heredoc_inline
         freeze_buf
-        push_state heredoc_tagging
+        push_state parsing_string
 
         return 0
     fi
