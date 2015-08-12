@@ -761,8 +761,8 @@ function process_char_state_conditional_operator() {
         (-ef|-eq|-ge|-gt|-le|-lt|-ne|-nt|-ot) ;;
         (==|!=|!|\&\&|\|\||\|\&) ;;
         (=~)
-            st_buf=
-
+            push_buf "$c"
+            pop_state
             switch_state conditional_regex
 
             return $RET_PROCHR_SKIP
