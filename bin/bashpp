@@ -92,9 +92,10 @@ st_buf_prev=
 st=$eof
 
 heredoc_stack=( "<empty>" )
-heredoc_stacktype=()
+heredoc_stacktype=( "<empty>" )
 heredoc_stacklen=0
 hd_inline=0
+hd_type=
 hd_buf=
 hd=
 
@@ -155,6 +156,10 @@ function msg_errorline() {
         errline=$(awk 'NR == '$lineno' { print ; exit }' "$file")
     fi
 
+    if [[ ${c:-} == $LF ]] && (( ( ${#errline} + 1 ) != charno )) ; then
+        die "incorrect charno: $charno != (${#errline} + 1)"
+    fi
+
     errline="${errline//[$CRLF]/ }  "
 
     local esc_errline=${errline///^[}
@@ -180,7 +185,7 @@ function msg() {
     shift
 
     local msg=${*///^[}
-          msg=${msg//$WHITESPACE/\\n}
+          msg=${msg//[$CRLF]/\\n}
 
     if [[ ! ${file:-} ]] ; then
         bashpp_msg "$msgtype_colour" "$*"
@@ -290,7 +295,13 @@ function debug() {
             return
         fi
 
-        msg "debug" "${FUNCNAME[1]:-main}(): $*"
+        local fn=${FUNCNAME[1]:-main}
+
+        if [[ $fn == "debug_"* ]] ; then
+            fn=${FUNCNAME[2]:-main}
+        fi
+
+        msg "debug" "$fn(): $*"
     fi
 }
 
@@ -535,7 +546,7 @@ function switch_state() {
 }
 
 function push_heredoc() {
-    debug "${heredoc_stack[@]} -> ${heredoc_stack[@]}:$1"
+    debug "$hd -> $1"
 
     if [[ $1 == "'"*"'" ]] ; then
         hd_type=$apos
@@ -552,7 +563,7 @@ function push_heredoc() {
 }
 
 function pop_heredoc() {
-    if (( ${#heredoc_stack[@]} == 1 )) ; then
+    if (( heredoc_stacklen == 0 )) ; then
         die "heredoc_stack accounting error"
     fi
 
@@ -560,7 +571,6 @@ function pop_heredoc() {
 
     # For compatibility with Bash versions < 4.2
     local i=$heredoc_stacklen
-    (( --i )) || true
 
     hd=${heredoc_stack[i]}
     hd_type=${heredoc_stacktype[i]}
@@ -568,9 +578,15 @@ function pop_heredoc() {
     unset heredoc_stack[i]
     unset heredoc_stackbuf[i]
 
-    (( --heredoc_stacklen )) || true
+    if (( --heredoc_stacklen == 0 )) ; then
+        if (( st == heredoc )) ; then
+            pop_state
+        else
+            die "unable to pop heredoc state"
+        fi
+    fi
 
-    debug "${heredoc_stack[@]}:$cur_hd -> ${heredoc_stack[@]}"
+    debug "$cur_hd -> $hd"
 }
 
 function freeze_buf() {
@@ -600,7 +616,11 @@ function push_buf() {
     if (( SECONDS > 0 )) ; then
         local p=$(( ( fileoffset * 100 ) / filesize ))
 
-        info "${p}% complete - current state = '$st_name'"
+        if (( DEBUG )) ; then
+            debug "${p}% complete"
+        elif (( VERBOSE )) ; then
+            info "${p}% complete"
+        fi
 
         SECONDS=0
     fi
@@ -922,36 +942,32 @@ function process_char_state_heredoc() {
 }
 
 function process_char_state_heredoc_inline() {
-    if (( hd_inline == 0 )) ; then
-        if [[ $c == [$CRLF\<] ]] ; then
-            pop_state
-            err "unexpected character in inline heredoc"
-        else
-            hd_inline=1
-            push_state parsing_string
-        fi
-    elif (( hd_inline == 1 )) ; then
-        hd_inline=0
-        pop_state
-
-        if [[ $c == '<' ]] ; then
-            err "unexpected redirect in inline heredoc"
-        fi
+    if [[ $st_buf == *[$CRLF]* ]] ; then
+        warn "herestring contains new-line: ${st_buf//[$CRLF]/\\n}"
     fi
+
+    pop_state
 }
 
 function process_char_state_heredoc_tag() {
-    if (( st_charno == 1 )) && [[ $c == '<' ]] ; then
-        switch_state heredoc_inline
-    else
-        switch_state heredoc_tagged
+    pop_state
+
+    if [[ $c == '<' ]] ; then
+        push_state heredoc_inline
         push_state parsing_string
+
+        return 0
     fi
+
+    push_state heredoc_tagged
+    push_state parsing_string
+
+    return $RET_PROCHR_CONT
 }
 
 function process_char_state_heredoc_tagged() {
     if [[ $st_buf_prev == *[$CRLF]* ]] ; then
-        warn "heredocument contains new-line"
+        warn "heredocument tag contains new-line: ${st_buf_prev//[$CRLF]/\\n}"
     fi
 
     push_heredoc "$st_buf_prev"
@@ -977,7 +993,9 @@ function process_char_state_parens() {
 }
 
 function process_char_state_parsing() {
-    if [[ $c == '#' ]] ; then
+    if (( heredoc_stacklen )) && [[ $c == [$CRLF] ]] ; then
+        push_state heredoc
+    elif [[ $c == '#' ]] ; then
         if (( charno == 1 )) ; then
             push_state directive
             freeze_buf
@@ -1053,6 +1071,8 @@ function process_char_state_redirect_fd() {
 function process_char_state_redirect_in() {
     pop_state
 
+    # TODO: Process substitution.
+
     if [[ $c == '<' ]] ; then
         push_state heredoc_tag
     elif [[ $c == '&' ]] ; then
@@ -1063,17 +1083,14 @@ function process_char_state_redirect_in() {
 }
 
 function process_char_state_redirect_out() {
-    if (( st_charno == 1 )) ; then
-        if [[ $c == '>' ]] ; then
-            # Append mode.
-            true
-        fi
-    elif (( st_charno == 2 )) ; then
-        if [[ $c == '>' ]] ; then
-            err "illegal redirect"
-        fi
+    pop_state
 
-        pop_state
+    if [[ $c == '>' ]] ; then
+        true
+    elif [[ $c == '&' ]] ; then
+        push_state redirect_fd
+    else
+        return $RET_PROCHR_CONT
     fi
 }
 
@@ -1193,11 +1210,13 @@ getc_eof=0
 
 function getc() {
     if (( getc_offset == getc_buflen )) ; then
+        debug "buffer empty - loading next $getc_bufsize bytes from file"
+
         if (( getc_eof )) ; then
             return 1
         fi
 
-        if ! read -r -N $getc_bufsize getc_buf ; then
+        if ! IFS=$'\0' read -r -N $getc_bufsize getc_buf ; then
             getc_eof=1
         fi
 
