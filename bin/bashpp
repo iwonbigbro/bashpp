@@ -28,6 +28,11 @@ ERROR_MAX=${ERROR_MAX:-10}
 BUF_MAX=${BUF_MAX:-4096}
 FILE_MAX=${FILE_MAX:-0}
 
+RET_PROCHR_CONT=1
+RET_PROCHR_PUSHBUF=2
+RET_PROCHR_POPSTATE=4
+RET_PROCHR_SKIP=8
+
 OUTPUT_LINES=0
 SECONDS=0
 
@@ -66,46 +71,8 @@ lineno=1
 charno=1
 flushed=0
 
-states=0
-while read state ; do
-    printf -v $state "%d" $states
-
-    (( ++states ))
-done <<STATES
-apos
-arithmetic
-bracket_s
-bracket_c
-comment
-directive
-directive_escape
-dollar
-escape
-escape_sequence
-expandbrace
-expandcmd
-expandparam
-expandvar
-heredoc_inline
-heredoc_tag
-heredoc_tagged
-heredoc
-conditional
-conditional_operator
-conditional_regex
-number
-parens
-parsing
-parsing_string
-quote
-redirect_in
-redirect_out
-tick
-word
-eof
-STATES
-
-unset state
+states=1
+eof=0
 state_stack=()
 state_stackbuf=()
 state_stacklen=0
@@ -126,9 +93,11 @@ flushbuf=0
 freezebuf=0
 
 files=()
-
 filesize=
+
 errline=
+
+buf_ptr=0
 buf=
 
 function assoc_arrcpy() {
@@ -164,8 +133,9 @@ function bashpp_msg() {
         funcname=${FUNCNAME[2]:-main}
     fi
 
-    printf >&2 "${bashpp##*/}: $msgtype:${funcname:+ $funcname:} %s\n" \
-        "${*///^[}"
+    local msg=${*///^[}
+
+    printf >&2 "${bashpp##*/}: $msgtype:${funcname:+ $funcname:} %s\n" "$msg"
 }
 
 function msg_errorline() {
@@ -174,7 +144,7 @@ function msg_errorline() {
     if (( stdin )) ; then
         local cc=
         while getc cc ; do
-            if [[ $cc == $'\n' ]] ; then
+            if [[ $cc == $LF ]] ; then
                 break
             fi
 
@@ -184,12 +154,19 @@ function msg_errorline() {
         errline=$(awk 'NR == '$lineno' { print ; exit }' "$file")
     fi
 
+    errline="${errline///^[} "
+
     local indicator=${errline:0:$charno}
           indicator=${indicator///^[}
           indicator=${indicator//?/.}
           indicator=${indicator%.}^
 
-    printf >&2 "  %s\n" "${errline///^[}" "$indicator"
+    local parsed=${errline:0:$charno-1} \
+          current=${errline:$charno-1:1} \
+          unparsed=${errline:$charno}
+
+    printf >&2 "  [38;5;105m%s[38;5;167m%s[0m%s\n%s\n" \
+        "$parsed" "${current/ /_}" "$unparsed" "  $indicator"
 
     errline=
 }
@@ -200,23 +177,24 @@ function msg() {
     local show_errorline=1
     shift
 
+    local msg=${*///^[}
+          msg=${msg//$LF/\\n}
+
     if [[ ! ${file:-} ]] ; then
         bashpp_msg "$msgtype_colour" "$*"
     else
-        if [[ $msgtype != +(error|warning) ]] ; then
+        if [[ $msgtype != +(error|warning|debug) ]] ; then
             show_errorline=0
         fi
             
         if [[ $file == "/dev/stdin" ]] ; then
-            printf >&2 "<stdin>:$lineno:$charno $msgtype_colour: %s\n"
-                "${*///^[}"
+            printf >&2 "<stdin>:$lineno:$charno $msgtype_colour: %s\n" "$msg"
 
             if (( show_errorline )) ; then
                 msg_errorline 1
             fi
         else
-            printf >&2 "$file:$lineno:$charno $msgtype_colour: %s\n" \
-                "${*///^[}"
+            printf >&2 "$file:$lineno:$charno $msgtype_colour: %s\n" "$msg"
 
             if (( show_errorline )) ; then
                 msg_errorline 0
@@ -243,7 +221,7 @@ function err() {
 }
 
 function stacktrace() {
-    local i=-1 total=0
+    local i=0 total=0
 
     if (( $# )) ; then
         printf >&2 "[1m[38;5;167mTraceback:[0m\n"
@@ -253,10 +231,14 @@ function stacktrace() {
     fi
 
 
-    while (( ++i < ${#BASH_LINENO[@]} )) ; do
-        if [[ ${FUNCNAME[i]} == +(main|die|stacktrace) ]] ; then
+    while (( ++i <= ${#BASH_LINENO[@]} )) ; do
+        local s=${BASH_SOURCE[i]:-$BASH_SOURCE} \
+              f=${FUNCNAME[i]:-main} \
+              l=${BASH_LINENO[i-1]}
+
+        if [[ $f == +(die|stacktrace) ]] ; then
             continue
-        elif [[ ! ${FUNCNAME[i]} ]] ; then
+        elif (( l == 0 )) ; then
             continue
         fi
 
@@ -264,10 +246,8 @@ function stacktrace() {
             printf >&2 "[1m[38;5;167mTraceback:[0m\n"
         fi
 
-        printf >&2 "  [38;5;167m%s:%d: %s()[0m\n" \
-            "${BASH_SOURCE[i+1]:-$BASH_SOURCE}" \
-            "${BASH_LINENO[i]}" \
-            "${FUNCNAME[i]}"
+        printf >&2 "  [38;5;167m%s:%s():%d: %s[0m\n" "$s" "$f" "$l" \
+            "$(awk -v l=$l 'NR == l { print }' < "$s")"
     done
 }
 
@@ -432,8 +412,7 @@ function remove_define() {
 }
 
 function push_state() {
-    local char=${c:-}
-    debug "$st_name -> $1: '${st_buf##*${LF}}${c:-}'"
+    debug "$st_name -> $1: '${c:-}'"
 
     state_stackbuf+=( "$st_buf" )
     state_stack+=( $st_name )
@@ -456,7 +435,7 @@ function pop_state() {
     local i=$state_stacklen
     (( --i )) || true
 
-    debug "$st_name -> ${state_stack[i]}: '${st_buf##*${LF}}${c:-}'"
+    debug "$st_name -> ${state_stack[i]}: '${c:-}'"
 
     st_name=${state_stack[i]}
     st_buf_prev=$st_buf
@@ -471,7 +450,7 @@ function pop_state() {
 }
 
 function switch_state() {
-    debug "$st_name -> $1: '${st_buf##*${LF}}${c:-}'"
+    debug "$st_name -> $1: '${c:-}'"
 
     st=${!1}
     st_name=$1
@@ -551,7 +530,15 @@ function push_buf() {
     if (( freezebuf == 1 )) ; then
         freezebuf_buf+=$1
     else
+        if (( buf_ptr == fileoffset )) ; then
+            die "duplicate calls to push_buf"
+        fi
+
         buf+=$1
+
+        if [[ $1 == $c || $(substr buf -1) == $c ]] ; then
+            buf_ptr=$fileoffset
+        fi
 
         if (( flushbuf || ${#buf} > BUF_MAX )) ; then
             printf "%s" "$buf"
@@ -599,12 +586,318 @@ function process_define() {
 function check_escape_sequence() {
     if [[ $c == '' ]] ; then
         push_state escape_sequence
-        push_buf "$c"
 
         return 0
     fi
 
     return 1
+}
+
+function process_char_state_apos() {
+    if [[ $c == "'" ]] ; then
+        pop_state
+    elif [[ $c == '' ]] ; then
+        push_state escape_sequence
+        push_buf "$c"
+
+        return $RET_PROCHR_CONT
+    fi
+}
+
+function process_char_state_arithmetic() {
+    if [[ $c == '\' ]] ; then
+        push_state escape
+    elif [[ $c == '(' ]] ; then
+        push_state parens
+    elif [[ $c == ')' && $(substr st_buf -1) == ')' ]] ; then
+        pop_state
+    fi
+}
+
+function process_char_state_bracket_c() {
+    if [[ $c == '}' ]] ; then
+        pop_state
+    else
+        process_char_state_parsing || return $?
+    fi
+}
+
+function process_char_state_bracket_s() {
+    if [[ $c == '\' ]] ; then
+        push_state escape
+    elif [[ $c == '[' ]] ; then
+        switch_state conditional
+    elif [[ $c == ']' ]] ; then
+        pop_state
+    fi
+}
+
+function process_char_state_comment() {
+    if [[ $c == $LF ]] ; then
+        pop_state
+    fi
+}
+
+function process_char_state_conditional() {
+    if (( st_charno == 1 )) ; then
+        if [[ $c != ' ' ]] ; then
+            warn "missing whitespace in conditional expression"
+
+            if [[ $c == [\-=\!\<\>] ]] ; then
+                push_state conditional_operator
+            fi
+        fi
+    fi
+
+    if [[ $(substr st_buf -1) == ' ' && $c == [\-\!=] ]] ; then
+        push_state conditional_operator
+    elif [[ $c == '\' ]] ; then
+        push_state escape
+    elif [[ $c == "'" ]] ; then
+        push_state apos
+    elif [[ $c == '"' ]] ; then
+        push_state quote
+    elif [[ $c == '(' ]] ; then
+        push_state parens
+    elif [[ $c == ')' && $(substr st_buf -1) == ')' ]] ; then
+        err "exiting conditional too early"
+        pop_state
+    elif [[ $c == ']' && $(substr st_buf -1) == ']' ]] ; then
+        pop_state
+    fi
+}
+
+function process_char_state_conditional_operator() {
+    if [[ $c == $LF || $c == ' ' ]] ; then
+        push_buf "$c"
+        st_buf=
+
+        case $st_buf in
+        (-[abcdefghklnoprstuvwxzGLNORS]) ;;
+        (-ef|-eq|-ge|-gt|-le|-lt|-ne|-nt|-ot) ;;
+        (==|!=|!|\&\&|\|\||\|\&) ;;
+        (=~)
+            switch_state conditional_regex
+
+            return $RET_PROCHR_SKIP
+            ;;
+        (=)
+            warn "posix operator in non-posix conditional"
+            ;;
+        (*)
+            err "unrecognized operator: '$st_buf'"
+            ;;
+        esac
+
+        pop_state
+
+        return $RET_PROCHR_CONT
+    fi
+}
+
+function process_char_state_conditional_regex() {
+    if [[ $c == '\' ]] ; then
+        push_state escape
+    elif [[ $c == $LF ]] ; then
+        err "unexpected new-line in regular expression"
+        pop_state
+    elif [[ $c == ' ' ]] ; then
+        pop_state
+
+        return $RET_PROCHR_CONT
+    fi
+}
+
+function process_char_state_directive() {
+    if (( st_charno == 2 )) && [[ $c != [a-z] ]] ; then
+        thaw_buf
+        switch_state comment
+        push_buf "$freezebuf_buf"
+
+        return $RET_PROCHR_CONT
+    elif [[ $c == $LF ]] ; then
+        thaw_buf
+
+        local directive= directive_params=
+        read directive directive_params <<<"${freezebuf_buf:1}"
+
+        pop_state
+
+        if (( ${DIRS[$directive]:-0} == 1 )) ; then
+            if process_dir_$directive "$directive_params" ; then
+                return 0
+            fi
+        else
+            err "invalid directive: $directive"
+        fi
+
+        push_buf "$freezebuf_buf"
+    fi
+}
+
+function process_char_state_dollar() {
+    pop_state
+
+    if [[ $c == [*@\#\?\-\$\!0-9] ]] ; then
+        true
+    elif [[ $c == "'" ]] ; then
+        push_state apos
+    elif [[ $c == '"' ]] ; then
+        push_state quote
+    elif [[ $c == '{' ]] ; then
+        push_state expandparam
+    elif [[ $c == '(' ]] ; then
+        push_state expandcmd
+    elif [[ $c == [A-Za-z_] ]] ; then
+        push_state expandvar
+
+        return $RET_PROCHR_CONT
+    else
+        err "unexpected token in parameter expansion"
+    fi
+}
+
+function process_char_state_escape() {
+    push_buf "$c"
+    pop_state
+
+    return $RET_PROCHR_SKIP
+}
+
+function process_char_state_escape_sequence() {
+    if (( st_charno == 1 )) ; then
+        if [[ $c == '[' ]] ; then
+            return 0
+        fi
+    elif [[ $c == [0-9\;] ]] ; then
+        return 0
+    elif [[ $c == 'm' ]] ; then
+        pop_state
+        return 0
+    fi
+
+    warn "unexpected character in escape sequence"
+
+    pop_state
+
+    return $RET_PROCHR_CONT
+}
+
+function process_char_state_expandcmd() {
+    if (( st_charno == 1 )) && [[ $c == '(' ]] ; then
+        switch_state arithmetic
+    elif [[ $c == ')' ]] ; then
+        pop_state
+    else
+        process_char_state_parsing || return $?
+    fi
+}
+
+function process_char_state_expandparam() {
+    if (( st_charno == 1 )) ; then
+        if [[ $c != [A-Za-z0-9_\!\*\@] && $c != '#' ]] ; then
+            err "malformed parameter expansion expression"
+        fi
+    elif (( st_charno == 2 )) && [[ $st_buf == [0-9] ]] ; then
+        if [[ $c != '}' ]] ; then
+            err "malformed parameter expansion expression"
+        fi
+
+    # TODO: Handle expressions.
+
+    elif [[ $c == '}' ]] ; then
+        pop_state
+    fi
+}
+
+function process_char_state_expandvar() {
+    if (( st_charno == 1 )) ; then
+        if [[ $c == [0-9] ]] ; then
+            push_buf "$c"
+            pop_state
+
+            return $RET_PROCHR_SKIP
+        fi
+    elif [[ $c != [A-Za-z0-9_] ]] ; then
+        pop_state
+
+        return $RET_PROCHR_CONT
+    fi
+}
+
+function process_char_state_heredoc() {
+    if [[ $c == $LF ]] ; then
+        if [[ $hd_buf == $hd ]] ; then
+            pop_heredoc
+        fi
+
+        hd_buf=
+    else
+        if (( hd_type == quote )) ; then
+            if [[ $c == '$' ]] ; then
+                push_state dollar
+            elif [[ $c == '`' ]] ; then
+                push_state tick
+            fi
+        fi
+
+        hd_buf+="$c"
+    fi
+}
+
+function process_char_state_heredoc_inline() {
+    if (( hd_inline == 0 )) ; then
+        if [[ $c == '<' || $c == $LF ]] ; then
+            pop_state
+            err "unexpected character in inline heredoc"
+        else
+            hd_inline=1
+            push_state parsing_string
+        fi
+    elif (( hd_inline == 1 )) ; then
+        hd_inline=0
+        pop_state
+
+        if [[ $c == '<' ]] ; then
+            err "unexpected redirect in inline heredoc"
+        fi
+    fi
+}
+
+function process_char_state_heredoc_tag() {
+    if (( st_charno == 1 )) && [[ $c == '<' ]] ; then
+        switch_state heredoc_inline
+    else
+        switch_state heredoc_tagged
+        push_state parsing_string
+    fi
+}
+
+function process_char_state_heredoc_tagged() {
+    if [[ $st_buf_prev == *$LF* ]] ; then
+        warn "heredocument contains new-line"
+    fi
+
+    push_heredoc "$st_buf_prev"
+    pop_state
+}
+
+function process_char_state_number() {
+    if [[ $c != [0-9] ]] ; then
+        pop_state
+
+        return $RET_PROCHR_CONT
+    fi
+}
+
+function process_char_state_parens() {
+    if [[ $c == '\' ]] ; then
+        push_state escape
+    elif [[ $c == '(' ]] ; then
+        switch_state arithmetic
+    elif [[ $c == ')' ]] ; then
+        pop_state
+    fi
 }
 
 function process_char_state_parsing() {
@@ -639,339 +932,105 @@ function process_char_state_parsing() {
     fi
 }
 
+function process_char_state_parsing_string() {
+    if [[ $c == [\t\ ] || $c == $LF ]] ; then
+        pop_state
+
+        return $RET_PROCHR_CONT
+    fi
+
+    process_char_state_parsing || return $?
+}
+
+function process_char_state_quote() {
+    if [[ $c == '\' ]] ; then
+        push_state escape
+    elif [[ $c == '$' ]] ; then
+        push_state dollar
+    elif [[ $c == '`' ]] ; then
+        push_state tick
+    elif [[ $c == '"' ]] ; then
+        #err "endquote"
+        pop_state
+    fi
+}
+
+function process_char_state_redirect_in() {
+    if [[ $c == '<' ]] ; then
+        push_state heredoc_tag
+    else
+        pop_state
+    fi
+}
+
+function process_char_state_redirect_out() {
+    if (( st_charno == 1 )) ; then
+        if [[ $c == '>' ]] ; then
+            # Append mode.
+            true
+        fi
+    elif (( st_charno == 2 )) ; then
+        if [[ $c == '>' ]] ; then
+            err "illegal redirect"
+        fi
+
+        pop_state
+    fi
+}
+
+function process_char_state_tick() {
+    if [[ $c == '`' ]] ; then
+        pop_state
+    else
+        process_char_state_parsing || return $?
+    fi
+}
+
+function process_char_state_word() {
+    if [[ $c != [0-9A-Za-z_] ]] ; then
+        pop_state
+        thaw_buf
+
+        debug "word = '$freezebuf_buf'"
+
+        if is_define "$freezebuf_buf" ; then
+            debug "substituting '$freezebuf_buf' with '${DEFS[$freezebuf_buf]}'"
+            push_buf "${DEFS[$freezebuf_buf]}"
+        else
+            push_buf "$freezebuf_buf"
+        fi
+
+        return $RET_PROCHR_CONT
+    fi
+}
+
 function process_char() {
-    local c=$1
+    local c=$1 ret=0 pushbuf=1
 
     debug_l 2 "$c"
 
-    if (( st == apos )) ; then
-        if [[ $c == "'" ]] ; then
-            pop_state
-        elif check_escape_sequence ; then
-            return 0
-        fi
-    elif (( st == arithmetic )) ; then
-        if [[ $c == '\' ]] ; then
-            push_state escape
-        elif [[ $c == '(' ]] ; then
-            push_state parens
-        elif [[ $c == ')' && $(substr st_buf -1) == ')' ]] ; then
-            pop_state
-        fi
-    elif (( st == bracket_c )) ; then
-        if [[ $c == '}' ]] ; then
-            pop_state
-        else
-            process_char_state_parsing
-        fi
-    elif (( st == bracket_s )) ; then
-        if [[ $c == '\' ]] ; then
-            push_state escape
-        elif [[ $c == '[' ]] ; then
-            switch_state conditional
-        elif [[ $c == ']' ]] ; then
-            pop_state
-        fi
-    elif (( st == comment )) ; then
-        if [[ $c == $'\n' ]] ; then
-            pop_state
-        fi
-    elif (( st == conditional )) ; then
-        if (( st_charno == 1 )) ; then
-            if [[ $c != ' ' ]] ; then
-                warn "missing whitespace in conditional expression"
-
-                if [[ $c == [\-=\!\<\>] ]] ; then
-                    push_state conditional_operator
-                fi
-            fi
-        fi
-
-        if [[ $(substr st_buf -1) == ' ' && $c == [\-\!=] ]] ; then
-            push_state conditional_operator
-        elif [[ $c == '\' ]] ; then
-            push_state escape
-        elif [[ $c == "'" ]] ; then
-            push_state apos
-        elif [[ $c == '"' ]] ; then
-            push_state quote
-        elif [[ $c == '(' ]] ; then
-            push_state parens
-        elif [[ $c == ')' && $(substr st_buf -1) == ')' ]] ; then
-            pop_state
-        elif [[ $c == ']' && $(substr st_buf -1) == ']' ]] ; then
-            pop_state
-        fi
-    elif (( st == conditional_operator )) ; then
-        if [[ $c == $LF || $c == ' ' ]] ; then
-            case $st_buf in
-            (-[abcdefghklnoprstuvwxzGLNORS]) ;;
-            (-ef|-eq|-ge|-gt|-le|-lt|-ne|-nt|-ot) ;;
-            (==|!=|!|\&\&|\|\||\|\&) ;;
-            (=~)
+    while true ; do
+        if ! process_char_state_$st_name && ret=$? ; then
+            if (( ret & RET_PROCHR_PUSHBUF )) ; then
                 push_buf "$c"
-                switch_state conditional_regex
-
-                return 0
-                ;;
-            (=)
-                warn "posix operator in non-posix conditional"
-                ;;
-            (*)
-                err "unrecognized operator: '$st_buf'"
-                ;;
-            esac
-
-            pop_state
-            process_char "$c"
-
-            return 0
-        fi
-    elif (( st == conditional_regex )) ; then
-        if [[ $c == '\' ]] ; then
-            push_state escape
-        elif [[ $c == $LF ]] ; then
-            err "unexpected new-line in regular expression"
-            pop_state
-        elif [[ $c == ' ' ]] ; then
-            pop_state
-            process_char "$c"
-
-            return 0
-        fi
-    elif (( st == directive )) ; then
-        if (( st_charno == 2 )) && [[ $c != [a-z] ]] ; then
-            thaw_buf
-            switch_state comment
-            push_buf "$freezebuf_buf"
-        elif [[ $c == '\' ]] ; then
-            push_state directive_escape
-        elif [[ $c == $'\n' ]] ; then
-            thaw_buf
-
-            local directive= directive_params=
-            read directive directive_params <<<"$(subsr freezebuf_buf 1)"
-
-            pop_state
-
-            if (( ${DIRS[$directive]:-0} == 1 )) ; then
-                if process_$directive "$directive_params" ; then
-                    return 0
-                fi
-            else
-                err "invalid directive: $directive"
+                pushbuf=0
             fi
 
-            push_buf "$freezebuf_buf"
-        fi
-    elif (( st == directive_escape )) ; then
-        pop_state
-        push_buf "\\$c"
-        
-        return 0
-    elif (( st == dollar )) ; then
-        pop_state
-
-        if [[ $c == [*@\#\?\-\$\!0-9] ]] ; then
-            true
-        elif [[ $c == "'" ]] ; then
-            push_state apos
-        elif [[ $c == '"' ]] ; then
-            push_state quote
-        elif [[ $c == '{' ]] ; then
-            push_state expandparam
-        elif [[ $c == '(' ]] ; then
-            push_state expandcmd
-        elif [[ $c == [A-Za-z_] ]] ; then
-            push_state expandvar
-        else
-            err "unexpected token in parameter expansion"
-        fi
-    elif (( st == escape )) ; then
-        push_buf "$c"
-        pop_state
-
-        return 0
-    elif (( st == escape_sequence )) ; then
-        push_buf "$c"
-
-        if (( st_charno == 2 )) ; then
-            if [[ $c == '[' ]] ; then
-                return 0
-            fi
-        else
-            if [[ $c == [0-9\;] ]] ; then
-                return 0
-            elif [[ $c == 'm' ]] ; then
+            if (( ret & RET_PROCHR_POPSTATE )) ; then
                 pop_state
-                return 0
+            fi
+
+            if (( ret & RET_PROCHR_SKIP )) ; then
+                pushbuf=0
+            fi
+
+            if (( ret & RET_PROCHR_CONT )) ; then
+                continue
             fi
         fi
 
-        warn "unexpected character in escape sequence"
-
-        pop_state
-        process_char "$c"
-
-        return 0
-    elif (( st == expandcmd )) ; then
-        if (( st_charno == 1 )) && [[ $c == '(' ]] ; then
-            switch_state arithmetic
-        elif [[ $c == ')' ]] ; then
-            pop_state
-        fi
-    elif (( st == expandparam )) ; then
-        if (( st_charno == 1 )) ; then
-            if [[ $c != [A-Za-z0-9_\!\*\@] && $c != '#' ]] ; then
-                err "malformed parameter expansion expression"
-            fi
-        elif (( st_charno == 2 )) && [[ $st_buf == [0-9] ]] ; then
-            if [[ $c != '}' ]] ; then
-                err "malformed parameter expansion expression"
-            fi
-
-        # TODO: Handle expressions.
-
-        elif [[ $c == '}' ]] ; then
-            pop_state
-        fi
-    elif (( st == expandvar )) ; then
-        if [[ $c != [A-Za-z0-9_] ]] ; then
-            pop_state
-            process_char "$c"
-
-            return 0
-        fi
-    elif (( st == heredoc )) ; then
-        if [[ $c == $'\n' ]] ; then
-            if [[ $hd_buf == $hd ]] ; then
-                pop_heredoc
-            fi
-
-            hd_buf=
-        else
-            if (( hd_type == quote )) ; then
-                if [[ $c == '$' ]] ; then
-                    push_state dollar
-                elif [[ $c == '`' ]] ; then
-                    push_state tick
-                fi
-            fi
-
-            hd_buf+="$c"
-        fi
-    elif (( st == heredoc_inline )) ; then
-        if (( hd_inline == 0 )) ; then
-            if [[ $c == '<' || $c == $'\n' ]] ; then
-                pop_state
-                err "unexpected character in inline heredoc"
-            else
-                hd_inline=1
-                push_state parsing_string
-            fi
-        elif (( hd_inline == 1 )) ; then
-            hd_inline=0
-            pop_state
-
-            if [[ $c == '<' ]] ; then
-                err "unexpected redirect in inline heredoc"
-            fi
-        fi
-    elif (( st == heredoc_tag )) ; then
-        if (( st_charno == 1 )) && [[ $c == '<' ]] ; then
-            switch_state heredoc_inline
-        else
-            switch_state heredoc_tagged
-            push_state parsing_string
-        fi
-    elif (( st == heredoc_tagged )) ; then
-        if [[ $st_buf_prev == *$'\n'* ]] ; then
-            warn "heredocument contains new-line"
-        fi
-
-        push_heredoc "$st_buf_prev"
-        pop_state
-    elif (( st == number )) ; then
-        if [[ $c != [0-9] ]] ; then
-            pop_state
-            process_char "$c"
-
-            return 0
-        fi
-    elif (( st == parens )) ; then
-        if [[ $c == '\' ]] ; then
-            push_state escape
-        elif [[ $c == '(' ]] ; then
-            switch_state arithmetic
-        elif [[ $c == ')' ]] ; then
-            pop_state
-        fi
-    elif (( st == parsing )) ; then
-        process_char_state_parsing
-    elif (( st == parsing_string )) ; then
-        if [[ $c == [\t\ ] || $c == $'\n' ]] ; then
-            pop_state
-            process_char "$c"
-
-            return 0
-        fi
-
-        process_char_state_parsing
-    elif (( st == quote )) ; then
-        if [[ $c == '\' ]] ; then
-            push_state escape
-        elif [[ $c == '$' ]] ; then
-            push_state dollar
-        elif [[ $c == '`' ]] ; then
-            push_state tick
-        elif [[ $c == '"' ]] ; then
-            #err "endquote"
-            pop_state
-        fi
-    elif (( st == redirect_in )) ; then
-        if [[ $c == '<' ]] ; then
-            push_state heredoc_tag
-        else
-            pop_state
-        fi
-    elif (( st == redirect_out )) ; then
-        if (( st_charno == 1 )) ; then
-            if [[ $c == '>' ]] ; then
-                # Append mode.
-                true
-            fi
-        elif (( st_charno == 2 )) ; then
-            if [[ $c == '>' ]] ; then
-                err "illegal redirect"
-            fi
-
-            pop_state
-        fi
-    elif (( st == tick )) ; then
-        if [[ $c == '`' ]] ; then
-            pop_state
-        else
-            process_char_state_parsing
-        fi
-    elif (( st == word )) ; then
-        if [[ $c != [0-9A-Za-z_] ]] ; then
-            pop_state
-            thaw_buf
-
-            debug "word = '$freezebuf_buf'"
-
-            if is_define "$freezebuf_buf" ; then
-                debug "substituting '$freezebuf_buf' with '${DEFS[$freezebuf_buf]}'"
-                push_buf "${DEFS[$freezebuf_buf]}"
-            else
-                push_buf "$freezebuf_buf"
-            fi
-
-            process_char "$c"
-
-            return 0
-        fi
-    fi
+        break
+    done
 
     push_buf "$c"
 }
@@ -994,7 +1053,7 @@ function iter_file() {
     while getc c ; do
         (( ++fileoffset ))
 
-        if [[ $c != $'\n' ]] ; then
+        if [[ $c != $LF ]] ; then
             errline+=$c
         fi
 
@@ -1002,7 +1061,7 @@ function iter_file() {
             break
         fi
 
-        if [[ $c == $'\n' ]] ; then
+        if [[ $c == $LF ]] ; then
             (( ++lineno ))
             charno=1
         else
@@ -1010,7 +1069,7 @@ function iter_file() {
             (( ++st_charno ))
         fi
 
-        if [[ $c == $'\n' ]] ; then
+        if [[ $c == $LF ]] ; then
             errline=
         fi
     done <"$file"
@@ -1169,6 +1228,13 @@ done
 if (( ${#files[@]} == 0 )) ; then
     set -- /dev/stdin
 fi
+
+while read x x state_fn ; do
+    printf -v ${state_fn#process_char_state_} "%d" $states
+
+    (( ++states ))
+done < <(declare -F)
+unset x state_fn
 
 iter_files "${files[@]}" >"$output"
 
