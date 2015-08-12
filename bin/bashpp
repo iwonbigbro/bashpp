@@ -287,6 +287,16 @@ function info() {
     fi
 }
 
+function info_progress() {
+    local p=$(( ( fileoffset * 100 ) / filesize ))
+
+    if (( DEBUG )) ; then
+        debug "${p}% complete"
+    elif (( VERBOSE )) ; then
+        info "${p}% complete"
+    fi
+}
+
 function debug() {
     if (( DEBUG )) ; then
         if (( DEBUG_STATES_FLAG == 1 )) ; then
@@ -614,13 +624,7 @@ function push_buf() {
     st_buf+=$1
 
     if (( SECONDS > 0 )) ; then
-        local p=$(( ( fileoffset * 100 ) / filesize ))
-
-        if (( DEBUG )) ; then
-            debug "${p}% complete"
-        elif (( VERBOSE )) ; then
-            info "${p}% complete"
-        fi
+        info_progress
 
         SECONDS=0
     fi
@@ -874,10 +878,8 @@ function process_char_state_escape_sequence() {
 }
 
 function process_char_state_expandcmd() {
-    if (( st_charno <= 2 )) ; then
-        if [[ "${st_buf}$c" == '((' ]] ; then
-            switch_state arithmetic
-        fi
+    if (( st_charno == 2 )) && [[ "${st_buf}$c" == '((' ]] ; then
+        switch_state arithmetic
     elif [[ $c == ')' ]] ; then
         pop_state
     else
@@ -1197,6 +1199,8 @@ function iter_file() {
 
     pop_state
     flush_buf 1
+
+    info_progress
 
     if (( st != eof )) ; then
         die "unexpected EOF"
