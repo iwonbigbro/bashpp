@@ -22,6 +22,8 @@ output="/dev/stdout"
 
 VERBOSE=${VERBOSE:-0}
 DEBUG=${DEBUG:-0}
+DEBUG_STATES=${DEBUG_STATES:-}
+DEBUG_STATES_FLAG=0
 DEBUG_LINENO=${DEBUG_LINENO:-0}
 ERROR_LINE=${ERROR_LINE:-1}
 ERROR_MAX=${ERROR_MAX:-10}
@@ -42,6 +44,10 @@ fi
 
 CR=$'\r'
 LF=$'\n'
+CRLF=$'\r\n'
+TAB=$'\t'
+
+WHITESPACE=$'\r\n\t '
 
 errors=0
 warnings=0
@@ -72,10 +78,13 @@ charno=1
 flushed=0
 
 states=1
+state_names=( "eof" )
 eof=0
+
 state_stack=()
 state_stackbuf=()
 state_stacklen=0
+
 st_name="eof"
 st_charno=1
 st_buf=
@@ -94,8 +103,6 @@ freezebuf=0
 
 files=()
 filesize=
-
-errline=
 
 buf_ptr=0
 buf=
@@ -140,21 +147,17 @@ function bashpp_msg() {
 
 function msg_errorline() {
     local stdin=$1
+    local errline=
 
     if (( stdin )) ; then
-        local cc=
-        while getc cc ; do
-            if [[ $cc == $LF ]] ; then
-                break
-            fi
-
-            errline+=$cc
-        done
+        errline="${buf##*$LF}..."
     else
         errline=$(awk 'NR == '$lineno' { print ; exit }' "$file")
     fi
 
-    errline="${errline///^[} "
+    errline="${errline//[$CRLF]/ }  "
+
+    local esc_errline=${errline///^[}
 
     local indicator=${errline:0:$charno}
           indicator=${indicator///^[}
@@ -165,10 +168,9 @@ function msg_errorline() {
           current=${errline:$charno-1:1} \
           unparsed=${errline:$charno}
 
-    printf >&2 "  [38;5;105m%s[38;5;167m%s[0m%s\n%s\n" \
-        "$parsed" "${current/ /_}" "$unparsed" "  $indicator"
-
-    errline=
+    printf >&2 "[38;5;105m%s[4m[38;5;167m%s[0m%s\n[38;5;64m%s[0m\n" \
+        "  ${parsed///^[}" "${current///^[}" "${unparsed///^[}" \
+        "  $indicator"
 }
 
 function msg() {
@@ -178,7 +180,7 @@ function msg() {
     shift
 
     local msg=${*///^[}
-          msg=${msg//$LF/\\n}
+          msg=${msg//$WHITESPACE/\\n}
 
     if [[ ! ${file:-} ]] ; then
         bashpp_msg "$msgtype_colour" "$*"
@@ -282,7 +284,9 @@ function info() {
 
 function debug() {
     if (( DEBUG )) ; then
-        if (( DEBUG_LINENO > 0 && lineno < DEBUG_LINENO )) ; then
+        if (( DEBUG_STATES_FLAG == 1 )) ; then
+            return
+        elif (( DEBUG_LINENO > 0 && lineno < DEBUG_LINENO )) ; then
             return
         fi
 
@@ -345,6 +349,64 @@ else
         fi
     }
 fi
+
+function describe_char() {
+    case $1 in
+    ($CR) echo "carriage-return" ;;
+    ($LF) echo "line-feed" ;;
+    ($CRLF) echo "<CRLF>" ;;
+    ($TAB) echo "tab" ;;
+    ($WHITESPACE) echo "whitespace" ;;
+    (" ") echo "space" ;;
+    (*) printf "%02X" "'$1" ;;
+    esac
+}
+
+function configure_states() {
+    local fn= \
+          name= \
+          exp= \
+          x=
+
+    while read x x fn ; do
+        if [[ $fn != process_char_state_* ]] ; then
+            continue
+        fi
+
+        name=${fn#process_char_state_}
+        state_names+=( $name )
+
+        printf -v $name "%d" $states
+        export $name
+
+        (( ++states ))
+    done < <(declare -F)
+
+    local debug_states=${DEBUG_STATES//,/ }
+
+    DEBUG_STATES=
+
+    for exp in $debug_states ; do
+        local added=0
+
+        for name in "${state_names[@]}" ; do
+            if [[ $name == $exp && " $DEBUG_STATES " != *" $name "* ]] ; then
+                DEBUG_STATES+=" $name"
+
+                (( ++added )) || true
+            fi
+        done
+
+        if (( ! added )) ; then
+            die "invalid state expression: $exp"
+        fi
+    done
+
+    if (( ${#DEBUG_STATES} > 0 )) ; then
+        DEBUG_STATES_FLAG=1
+        DEBUG=1
+    fi
+}
 
 function add_include_dir() {
     if [[ ! $1 ]] ; then
@@ -411,8 +473,24 @@ function remove_define() {
     undef "$1"
 }
 
+function debug_state_change() {
+    if (( DEBUG_STATES_FLAG == 1 )) ; then
+        if [[ " $DEBUG_STATES " == *" $1 "* ]] ; then
+            DEBUG_STATES_FLAG=2
+        fi
+    fi
+
+    debug "$st_name -> $1: '${c:-}' st_charno=$st_charno"
+
+    if (( DEBUG_STATES_FLAG == 2 )) ; then
+        if [[ " $DEBUG_STATES " != *" $1 "* ]] ; then
+            DEBUG_STATES_FLAG=1
+        fi
+    fi
+}
+
 function push_state() {
-    debug "$st_name -> $1: '${c:-}'"
+    debug_state_change "$1"
 
     state_stackbuf+=( "$st_buf" )
     state_stack+=( $st_name )
@@ -435,7 +513,7 @@ function pop_state() {
     local i=$state_stacklen
     (( --i )) || true
 
-    debug "$st_name -> ${state_stack[i]}: '${c:-}'"
+    debug_state_change "${state_stack[i]}"
 
     st_name=${state_stack[i]}
     st_buf_prev=$st_buf
@@ -450,14 +528,14 @@ function pop_state() {
 }
 
 function switch_state() {
-    debug "$st_name -> $1: '${c:-}'"
+    debug_state_change "$1"
 
     st=${!1}
     st_name=$1
 }
 
 function push_heredoc() {
-    IFS=: debug "${heredoc_stack[@]} -> ${heredoc_stack[@]}:$1"
+    debug "${heredoc_stack[@]} -> ${heredoc_stack[@]}:$1"
 
     if [[ $1 == "'"*"'" ]] ; then
         hd_type=$apos
@@ -492,7 +570,7 @@ function pop_heredoc() {
 
     (( --heredoc_stacklen )) || true
 
-    IFS=: debug "${heredoc_stack[@]}:$cur_hd -> ${heredoc_stack[@]}"
+    debug "${heredoc_stack[@]}:$cur_hd -> ${heredoc_stack[@]}"
 }
 
 function freeze_buf() {
@@ -583,22 +661,11 @@ function process_define() {
     return 1
 }
 
-function check_escape_sequence() {
-    if [[ $c == '' ]] ; then
-        push_state escape_sequence
-
-        return 0
-    fi
-
-    return 1
-}
-
 function process_char_state_apos() {
     if [[ $c == "'" ]] ; then
         pop_state
     elif [[ $c == '' ]] ; then
         push_state escape_sequence
-        push_buf "$c"
 
         return $RET_PROCHR_CONT
     fi
@@ -633,7 +700,7 @@ function process_char_state_bracket_s() {
 }
 
 function process_char_state_comment() {
-    if [[ $c == $LF ]] ; then
+    if [[ $c == [$CRLF] ]] ; then
         pop_state
     fi
 }
@@ -668,15 +735,14 @@ function process_char_state_conditional() {
 }
 
 function process_char_state_conditional_operator() {
-    if [[ $c == $LF || $c == ' ' ]] ; then
-        push_buf "$c"
-        st_buf=
-
+    if [[ $c == [$WHITESPACE] ]] ; then
         case $st_buf in
         (-[abcdefghklnoprstuvwxzGLNORS]) ;;
         (-ef|-eq|-ge|-gt|-le|-lt|-ne|-nt|-ot) ;;
         (==|!=|!|\&\&|\|\||\|\&) ;;
         (=~)
+            st_buf=
+
             switch_state conditional_regex
 
             return $RET_PROCHR_SKIP
@@ -698,8 +764,8 @@ function process_char_state_conditional_operator() {
 function process_char_state_conditional_regex() {
     if [[ $c == '\' ]] ; then
         push_state escape
-    elif [[ $c == $LF ]] ; then
-        err "unexpected new-line in regular expression"
+    elif [[ $c == [$CRLF] ]] ; then
+        err "unexpected $(describe_char "$c") in regular expression"
         pop_state
     elif [[ $c == ' ' ]] ; then
         pop_state
@@ -715,7 +781,7 @@ function process_char_state_directive() {
         push_buf "$freezebuf_buf"
 
         return $RET_PROCHR_CONT
-    elif [[ $c == $LF ]] ; then
+    elif [[ $c == [$CRLF] ]] ; then
         thaw_buf
 
         local directive= directive_params=
@@ -766,7 +832,11 @@ function process_char_state_escape() {
 
 function process_char_state_escape_sequence() {
     if (( st_charno == 1 )) ; then
-        if [[ $c == '[' ]] ; then
+        if [[ "${st_buf}$c" == '' ]] ; then
+            return 0
+        fi
+    elif (( st_charno == 2 )) ; then
+        if [[ "${st_buf}$c" == '[' ]] ; then
             return 0
         fi
     elif [[ $c == [0-9\;] ]] ; then
@@ -784,11 +854,17 @@ function process_char_state_escape_sequence() {
 }
 
 function process_char_state_expandcmd() {
-    if (( st_charno == 1 )) && [[ $c == '(' ]] ; then
-        switch_state arithmetic
+    if (( st_charno <= 2 )) ; then
+        if [[ "${st_buf}$c" == '((' ]] ; then
+            switch_state arithmetic
+        fi
     elif [[ $c == ')' ]] ; then
         pop_state
     else
+        if [[ $c == [$CRLF] ]] ; then
+            warn "unescaped multiline command substitution"
+        fi
+
         process_char_state_parsing || return $?
     fi
 }
@@ -826,7 +902,7 @@ function process_char_state_expandvar() {
 }
 
 function process_char_state_heredoc() {
-    if [[ $c == $LF ]] ; then
+    if [[ $c == [$CRLF] ]] ; then
         if [[ $hd_buf == $hd ]] ; then
             pop_heredoc
         fi
@@ -847,7 +923,7 @@ function process_char_state_heredoc() {
 
 function process_char_state_heredoc_inline() {
     if (( hd_inline == 0 )) ; then
-        if [[ $c == '<' || $c == $LF ]] ; then
+        if [[ $c == [$CRLF\<] ]] ; then
             pop_state
             err "unexpected character in inline heredoc"
         else
@@ -874,7 +950,7 @@ function process_char_state_heredoc_tag() {
 }
 
 function process_char_state_heredoc_tagged() {
-    if [[ $st_buf_prev == *$LF* ]] ; then
+    if [[ $st_buf_prev == *[$CRLF]* ]] ; then
         warn "heredocument contains new-line"
     fi
 
@@ -933,7 +1009,7 @@ function process_char_state_parsing() {
 }
 
 function process_char_state_parsing_string() {
-    if [[ $c == [\t\ ] || $c == $LF ]] ; then
+    if [[ $c == [$WHITESPACE] ]] ; then
         pop_state
 
         return $RET_PROCHR_CONT
@@ -950,16 +1026,39 @@ function process_char_state_quote() {
     elif [[ $c == '`' ]] ; then
         push_state tick
     elif [[ $c == '"' ]] ; then
-        #err "endquote"
         pop_state
     fi
 }
 
+function process_char_state_redirect_fd() {
+    if (( st_charno == 1 )) ; then
+        if [[ $c == [0-9] ]] ; then
+            return 0
+        fi
+    elif [[ $c == [0-9] ]] ; then
+        return 0
+    elif [[ $c == [$WHITESPACE] ]] ; then
+        pop_state
+
+        return 0
+    fi
+
+    err "unexpected character in redirect"
+
+    pop_state
+
+    return $RET_PROCHR_CONT
+}
+
 function process_char_state_redirect_in() {
+    pop_state
+
     if [[ $c == '<' ]] ; then
         push_state heredoc_tag
+    elif [[ $c == '&' ]] ; then
+        push_state redirect_fd
     else
-        pop_state
+        return $RET_PROCHR_CONT
     fi
 }
 
@@ -1005,12 +1104,23 @@ function process_char_state_word() {
 }
 
 function process_char() {
-    local c=$1 ret=0 pushbuf=1
+    local c=$1 \
+          ret=0 \
+          pushbuf=1 \
+          fn=
 
     debug_l 2 "$c"
 
     while true ; do
-        if ! process_char_state_$st_name && ret=$? ; then
+        fn="process_char_state_$st_name"
+
+        if $fn ; then
+            ret=0
+        else
+            ret=$?
+        fi
+
+        if (( ret != 0 )) ; then
             if (( ret & RET_PROCHR_PUSHBUF )) ; then
                 push_buf "$c"
                 pushbuf=0
@@ -1032,7 +1142,9 @@ function process_char() {
         break
     done
 
-    push_buf "$c"
+    if (( pushbuf )) ; then
+        push_buf "$c"
+    fi
 }
 
 function iter_files() {
@@ -1053,10 +1165,6 @@ function iter_file() {
     while getc c ; do
         (( ++fileoffset ))
 
-        if [[ $c != $LF ]] ; then
-            errline+=$c
-        fi
-
         if ! process_char "$c" ; then
             break
         fi
@@ -1067,10 +1175,6 @@ function iter_file() {
         else
             (( ++charno ))
             (( ++st_charno ))
-        fi
-
-        if [[ $c == $LF ]] ; then
-            errline=
         fi
     done <"$file"
 
@@ -1139,6 +1243,9 @@ Options:
      --debug-from #     Enable debugging information on and after line number #
                         in the source file.
 
+     --debug-state statename[,statement...]
+                        Enable debugging for a specific state or set of states.
+
      --max-errors #     Maximum number of errors permitted before stopping.  The
                         default is $ERROR_MAX.
 
@@ -1186,13 +1293,6 @@ while (( $# > 0 )) ; do
     (-d|--debug)
         (( ++DEBUG ))
         ;;
-    (--debug-level)
-        DEBUG=$2
-        shift
-        ;;
-    (--debug-level=*)
-        DEBUG=${1#*=}
-        ;;
     (--debug-from)
         DEBUG_LINENO=$2
         shift
@@ -1203,6 +1303,20 @@ while (( $# > 0 )) ; do
         DEBUG_LINENO=${1#*=}
 
         set -- "$@" --debug
+        ;;
+    (--debug-level)
+        DEBUG=$2
+        shift
+        ;;
+    (--debug-level=*)
+        DEBUG=${1#*=}
+        ;;
+    (--debug-state)
+        DEBUG_STATES+=" $2"
+        shift
+        ;;
+    (--debug-state=*)
+        DEBUG_STATES+=" ${1#*=}"
         ;;
     (--max-errors)
         ERROR_MAX=$2
@@ -1229,12 +1343,7 @@ if (( ${#files[@]} == 0 )) ; then
     set -- /dev/stdin
 fi
 
-while read x x state_fn ; do
-    printf -v ${state_fn#process_char_state_} "%d" $states
-
-    (( ++states ))
-done < <(declare -F)
-unset x state_fn
+configure_states
 
 iter_files "${files[@]}" >"$output"
 
