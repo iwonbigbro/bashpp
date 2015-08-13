@@ -176,9 +176,15 @@ function msg_errorline() {
           current=${errline:$charno-1:1} \
           unparsed=${errline:$charno}
 
-    printf >&2 "[38;5;105m%s[4m[38;5;167m%s[0m%s\n[38;5;64m%s[0m\n" \
-        "  ${parsed///^[}" "${current///^[}" "${unparsed///^[}" \
-        "  $indicator"
+    if (( tty )) ; then
+        printf >&2 "[38;5;105m%s[4m[38;5;167m%s[0m%s\n[38;5;64m%s[0m\n" \
+            "  ${parsed///^[}" "${current///^[}" "${unparsed///^[}" \
+            "  $indicator"
+    else
+        printf >&2 "%s%s%s\n%s\n" \
+            "  ${parsed///^[}" "${current///^[}" "${unparsed///^[}" \
+            "  $indicator"
+    fi
 }
 
 function msg() {
@@ -1029,6 +1035,10 @@ function process_char_state_parsing_string() {
 function process_char_state_quote() {
     if [[ $c == '\' ]] ; then
         push_state escape
+    elif [[ $c == '' ]] ; then
+        push_state escape_sequence
+
+        return $RET_PROCHR_CONT
     elif [[ $c == '$' ]] ; then
         push_state dollar
     elif [[ $c == '`' ]] ; then
