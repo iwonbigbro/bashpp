@@ -13,10 +13,6 @@ BASHINC=${BASHINC:-}
 
 declare -A DEFS=()
 declare -A MACROS=()
-declare -A DIRS=(
-    ["define"]=1
-    ["undef"]=1
-)
 
 output="/dev/stdout"
 
@@ -77,18 +73,14 @@ lineno=1
 charno=1
 flushed=0
 
-states=1
-state_names=( "eof" )
-eof=0
-
 state_stack=()
 state_stackbuf=()
 state_stacklen=0
 
-st_name="eof"
+st_name=
 st_charno=1
 st_buf=
-st=$eof
+st=
 
 heredoc_stack=( "<empty>" )
 heredoc_stacktype=( "<empty>" )
@@ -113,6 +105,10 @@ buf=
 
 function assoc_arrcpy() {
     declare -p $1 | sed 's?^[^=]\+=??'
+}
+
+function callable() {
+    declare -F $1 >/dev/null 2>&1 || [[ -x $1 ]]
 }
 
 function msgtype_colour() {
@@ -351,45 +347,51 @@ function describe_char() {
     esac
 }
 
-function configure_states() {
+function initialise() {
     local fn= \
           name= \
           exp= \
           x=
 
+    local state_names=( "eof" )
+
+    states=${#state_names[@]}
+
     while read x x fn ; do
-        if [[ $fn != process_char_state_* ]] ; then
-            continue
+        if [[ $fn == process_char_state_* ]] ; then
+            state_names+=( "${fn#process_char_state_}" )
         fi
-
-        name=${fn#process_char_state_}
-        state_names+=( $name )
-
-        printf -v $name "%d" $states
-        export $name
-
-        (( ++states ))
     done < <(declare -F)
 
     local debug_states=${DEBUG_STATES//,/ }
 
     DEBUG_STATES=
 
-    for exp in $debug_states ; do
+    for name in "${state_names[@]}" ; do
+        printf -v $name "%d" $states
+        export $name
+
+        (( ++states ))
+
         local added=0
 
-        for name in "${state_names[@]}" ; do
-            if [[ $name == $exp && " $DEBUG_STATES " != *" $name "* ]] ; then
-                DEBUG_STATES+=" $name"
+        if [[ $debug_states ]] ; then
+            for exp in $debug_states ; do
+                if [[ $name == $exp && " $DEBUG_STATES " != *" $name "* ]] ; then
+                    DEBUG_STATES+=" $name"
 
-                (( ++added )) || true
+                    (( ++added )) || true
+                fi
+            done
+
+            if (( ! added )) ; then
+                die "invalid state expression: $exp"
             fi
-        done
-
-        if (( ! added )) ; then
-            die "invalid state expression: $exp"
         fi
     done
+
+    st_name="eof"
+    st=$eof
 
     if (( ${#DEBUG_STATES} > 0 )) ; then
         DEBUG_STATES_FLAG=1
@@ -506,7 +508,7 @@ function push_state() {
 }
 
 function pop_state() {
-    if (( ${#state_stack[@]} == 0 )) ; then
+    if (( state_stacklen == 0 || ${#state_stack[@]} != state_stacklen )) ; then
         die "state_stack accounting error"
     fi
 
@@ -655,6 +657,26 @@ function flush_buf() {
 
 function process_directive_define() {
     local args=$1
+    local line=$2
+
+    if [[ $args =~ ^([A-Za-z_][A-Za-z0-9_]*)[\ \t]+(.*)$ ]] ; then
+        define "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+        return
+
+    elif [[ $args =~ ^([A-Za-z_][A-Za-z0-9_]*)$ ]] ; then
+        define "${BASH_REMATCH[1]}" 1
+        return
+
+    fi
+
+    err "illegal define: $line"
+
+    return 1
+}
+
+function process_directive_include() {
+    local args=$1
+    local line=$2
 
     if [[ $args =~ ^([A-Za-z_][A-Za-z0-9_]*)[\ \t]+(.*)$ ]] ; then
         define "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
@@ -799,8 +821,10 @@ function process_char_state_directive() {
 
         pop_state
 
-        if (( ${DIRS[$directive]:-0} == 1 )) ; then
-            if process_directive_$directive "$directive_params" ; then
+        local fn="process_directive_$directive"
+
+        if callable "$fn" ; then
+            if "$fn" "$directive_params" "$thawed_buf" ; then
                 return 0
             fi
         else
@@ -1371,7 +1395,7 @@ if (( ${#files[@]} == 0 )) ; then
     set -- /dev/stdin
 fi
 
-configure_states
+initialise
 
 iter_files "${files[@]}" >"$output"
 
