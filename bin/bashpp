@@ -51,7 +51,8 @@ WHITESPACE=$'\r\n\t '
 
 errors=0
 warnings=0
-msg_lines=0
+
+msg_errorline_lock=0
 
 tty_stdout=0
 tty_stderr=0
@@ -73,6 +74,7 @@ if [[ -t 2 ]] ; then
     tty=1
 fi
 
+<<<<<<< develop
 lineno=1
 charno=1
 flushed=0
@@ -105,11 +107,9 @@ freezebuf_stacklen=0
 freezebuf_buf=
 thawed_buf=
 
+=======
+>>>>>>> local
 files=()
-filesize=
-
-buf_ptr=0
-buf=
 
 function assoc_arrcpy() {
     declare -p $1 | sed 's?^[^=]\+=??'
@@ -153,6 +153,12 @@ function msg_errorline() {
     local stdin=$1
     local errline=
 
+    if (( msg_errorline_lock )) ; then
+        return
+    fi
+
+    (( ++msg_errorline_lock )) || true
+
     if (( stdin )) ; then
         errline="${buf##*$LF}..."
     else
@@ -185,6 +191,8 @@ function msg_errorline() {
             "  ${parsed///^[}" "${current///^[}" "${unparsed///^[}" \
             "  $indicator"
     fi
+
+    (( --msg_errorline_lock ))
 }
 
 function msg() {
@@ -391,6 +399,12 @@ function configure_states() {
         fi
     done
 
+<<<<<<< develop
+=======
+    st_name_default="eof"
+    st_default=$eof
+
+>>>>>>> local
     if (( ${#DEBUG_STATES} > 0 )) ; then
         DEBUG_STATES_FLAG=1
 
@@ -537,13 +551,13 @@ function switch_state() {
 function push_heredoc() {
     debug "$hd -> $1"
 
-    if [[ $1 =~ ^\'(.+)\'$ ]] ; then
+    if [[ $1 =~ ^['](.+)[']$ ]] ; then
         hd_type=$apos
         hd=${BASH_REMATCH[1]}
     else
         hd_type=$quote
 
-        if [[ $1 =~ ^\"(.+)\"$ ]] ; then
+        if [[ $1 =~ ^["](.+)["]$ ]] ; then
             hd=${BASH_REMATCH[1]}
         else
             hd=$1
@@ -655,6 +669,9 @@ function flush_buf() {
 
 function process_directive_define() {
     local args=$1
+<<<<<<< develop
+=======
+    local line=$2
 
     if [[ $args =~ ^([A-Za-z_][A-Za-z0-9_]*)[\ \t]+(.*)$ ]] ; then
         define "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
@@ -667,6 +684,50 @@ function process_directive_define() {
     fi
 
     err "illegal define: $line"
+
+    return 1
+}
+
+function process_directive_include() {
+    local args=$1
+    local line=$2
+    local includefile=
+>>>>>>> local
+
+    if [[ $args =~ ^["](.+)["]$ || $args =~ ^['](.+)[']$ ]] ; then
+        includefile=${BASH_REMATCH[1]}
+
+        if [[ $includefile != /* ]] ; then
+            includefile="${file%/*}/$includefile"
+        fi
+    elif [[ $args =~ ^\<(.+)\>$ ]] ; then
+        includefile=${BASH_REMATCH[1]}
+
+        local d= found=0
+        local IFS=':'
+
+        for d in $BASHINC ; do
+            if [[ -f $d/$includefile ]] ; then
+                includefile=$d/$includefile
+                found=1
+                break
+            fi
+        done
+
+        IFS=
+
+        if (( ! found )) ; then
+            err "file not found: $includefile"
+            return 1
+        fi
+    fi
+
+    if [[ $includefile ]] ; then
+        iter_file "$includefile"
+        return
+    else
+        err "illegal include: $line"
+    fi
 
     return 1
 }
@@ -1179,6 +1240,37 @@ function iter_file() {
     local filesize=$(wc -c <"$file")
     local fileoffset=0
     local c= pr_c=
+    local lineno=1
+    local charno=1
+    local flushed=0
+
+    local state_stack=()
+    local state_stackbuf=()
+    local state_stacklen=0
+
+    local st_charno=1
+    local st_buf=
+
+    local st_name=$st_name_default
+    local st=$st_default
+
+    local heredoc_stack=( "<empty>" )
+    local heredoc_stacktype=( "<empty>" )
+    local heredoc_stacklen=0
+    local hd_inline=0
+    local hd_type="<empty>"
+    local hd_buf=
+    local hd="<empty>"
+
+    local flushbuf=0
+    local freezebuf=0
+    local freezebuf_stack=()
+    local freezebuf_stacklen=0
+    local freezebuf_buf=
+    local thawed_buf=
+
+    local buf_ptr=0
+    local buf=
 
     push_state parsing
 
