@@ -21,7 +21,7 @@ declare -A DIRS=(
 output="/dev/stdout"
 
 VERBOSE=${VERBOSE:-0}
-DEBUG=${DEBUG:-0}
+DEBUG=${DEBUG:-${DEBUG_LEVEL:-0}}
 DEBUG_STATES=${DEBUG_STATES:-}
 DEBUG_STATES_FLAG=0
 DEBUG_LINENO=${DEBUG_LINENO:-0}
@@ -88,7 +88,6 @@ state_stacklen=0
 st_name="eof"
 st_charno=1
 st_buf=
-st_buf_prev=
 st=$eof
 
 heredoc_stack=( "<empty>" )
@@ -270,7 +269,7 @@ function die() {
           funcname=${funcname:+$funcname }
 
     stacktrace
-    bashpp_msg "$(msgtype_colour "error")" "$*"
+    err "$@"
 
     exit 1
 }
@@ -334,49 +333,6 @@ function debug_l() {
     fi
 }
 
-if (( BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 2 )) ; then
-    # Features supported in version 4.2+:
-    #     \uXXXX and \UXXXXXXXX
-    #     declare -g
-    #     test -v
-    #     printf %(fmt)T
-    #     ${array[-idx]} and ${var:start:-len}
-    #     lastpipe (shopt)
-    function substr() {
-        local str=${!1}
-        local strlen=${#str} \
-              offset=${2:-} \
-              length=${3:--1}
-
-        if (( length < 0 )) ; then
-            if (( offset < 0 )) ; then
-                length=$(( offset * -1 ))
-            else
-                length=$(( strlen - offset ))
-            fi
-        fi
-
-        if (( offset < 0 )) ; then
-            offset=$(( strlen + offset ))
-        fi
-
-        printf "%s" "${str:$offset:$length}"
-    }
-else
-    function substr() {
-        local str=${!1}
-        local strlen=${#str} \
-              offset=${2:-} \
-              length=${3:--1}
-
-        if (( length > -1 )) ; then
-            printf "%s" "${str:$offset:$length}"
-        else
-            printf "%s" "${str: $offset}"
-        fi
-    }
-fi
-
 function describe_char() {
     case $1 in
     ($CR) echo "carriage-return" ;;
@@ -431,8 +387,11 @@ function configure_states() {
 
     if (( ${#DEBUG_STATES} > 0 )) ; then
         DEBUG_STATES_FLAG=1
-        DEBUG=1
-    elif (( DEBUG_LINENO > 0 )) ; then
+
+        if (( ! DEBUG )) ; then
+            DEBUG=1
+        fi
+    elif (( DEBUG_LINENO > 0 && ! DEBUG )) ; then
         DEBUG=1
     fi
 }
@@ -454,11 +413,19 @@ function definefn() {
 }
 
 function is_define() {
-    (( ${#DEFS[$1]:-} > 0 ))
+    if [[ ! $1 ]] ; then
+        die "ambiguous request"
+    fi
+
+    [[ ${!DEFS[$1]:-} ]]
 }
 
 function is_macro() {
-    (( ${#MACROS[$1]:-} > 0 ))
+    if [[ ! $1 ]] ; then
+        die "ambiguous request"
+    fi
+
+    [[ ${!MACROS[$1]:-} ]]
 }
 
 function define() {
@@ -529,7 +496,6 @@ function push_state() {
     st=${!1}
     st_name=$1
     st_charno=1
-    st_buf_prev=$st_buf
     st_buf=
 }
 
@@ -545,7 +511,6 @@ function pop_state() {
     debug_state_change "${state_stack[i]}"
 
     st_name=${state_stack[i]}
-    st_buf_prev=$st_buf
     st_buf=${state_stackbuf[i]}
     st_charno=${#st_buf}
     st=${!st_name}
@@ -612,12 +577,12 @@ function pop_heredoc() {
 }
 
 function freeze_buf() {
-    debug
-
     freezebuf_stack+=( "${freezebuf_buf}" )
     freezebuf_buf=
 
     (( ++freezebuf ))
+
+    debug "freezebuf=$freezebuf, freezebuf_stack=${#freezebuf_stack[*]}"
 }
 
 function thaw_buf() {
@@ -644,7 +609,7 @@ function push_buf() {
         SECONDS=0
     fi
 
-    if (( freezebuf == 1 )) ; then
+    if (( freezebuf )) ; then
         freezebuf_buf+=$1
     else
         if (( buf_ptr == fileoffset )) ; then
@@ -653,7 +618,7 @@ function push_buf() {
 
         buf+=$1
 
-        if [[ $1 == $c || $(substr buf -1) == $c ]] ; then
+        if [[ $1 == $c ]] ; then
             buf_ptr=$fileoffset
         fi
 
@@ -715,7 +680,7 @@ function process_char_state_arithmetic() {
         push_state escape
     elif [[ $c == '(' ]] ; then
         push_state parens
-    elif [[ $c == ')' && $(substr st_buf -1) == ')' ]] ; then
+    elif [[ ${pr_c}$c == '))' ]] ; then
         pop_state
     fi
 }
@@ -755,7 +720,7 @@ function process_char_state_conditional() {
         fi
     fi
 
-    if [[ $(substr st_buf -1) == ' ' && $c == [\-\!=] ]] ; then
+    if [[ $pr_c == [$WHITESPACE] && $c == [\-\!=] ]] ; then
         push_state conditional_operator
     elif [[ $c == '\' ]] ; then
         push_state escape
@@ -765,10 +730,10 @@ function process_char_state_conditional() {
         push_state quote
     elif [[ $c == '(' ]] ; then
         push_state parens
-    elif [[ $c == ')' && $(substr st_buf -1) == ')' ]] ; then
+    elif [[ ${pr_c}$c == '))' ]] ; then
         err "exiting conditional too early"
         pop_state
-    elif [[ $c == ']' && $(substr st_buf -1) == ']' ]] ; then
+    elif [[ ${pr_c}$c == ']]' ]] ; then
         pop_state
     fi
 }
@@ -959,10 +924,13 @@ function process_char_state_heredoc() {
 }
 
 function process_char_state_heredoc_inline() {
-    if [[ $st_buf == *[$CRLF]* ]] ; then
-        warn "herestring contains new-line: ${st_buf//[$CRLF]/\\n}"
+    thaw_buf
+
+    if [[ $thawed_buf == *[$CRLF]* ]] ; then
+        warn "herestring contains new-line: ${thawed_buf//[$CRLF]/\\n}"
     fi
 
+    push_buf "$thawed_buf"
     pop_state
 }
 
@@ -992,6 +960,7 @@ function process_char_state_heredoc_tagged() {
     fi
 
     push_heredoc "$thawed_buf"
+    push_buf "$thawed_buf"
     pop_state
 }
 
@@ -1043,6 +1012,7 @@ function process_char_state_parsing() {
         push_state redirect_out
     elif [[ $c == [A-Za-z_] ]] ; then
         push_state word
+        freeze_buf
     fi
 }
 
@@ -1124,17 +1094,17 @@ function process_char_state_tick() {
 
 function process_char_state_word() {
     if [[ $c != [0-9A-Za-z_] ]] ; then
-        local word=$st_buf
-
         pop_state
+        thaw_buf
 
-        debug "word = '$word'"
+        debug "word = '$thawed_buf'"
 
-        if is_define "$word" ; then
-            debug "substituting '$word' with '${DEFS[$word]}'"
-            push_buf "${DEFS[$word]}"
+        if is_define "$thawed_buf" ; then
+            info "substituting '$thawed_buf' with '${DEFS[$thawed_buf]}'"
+
+            push_buf "${DEFS[$thawed_buf]}"
         else
-            push_buf "$word"
+            push_buf "$thawed_buf"
         fi
 
         return $RET_PROCHR_CONT
@@ -1143,6 +1113,7 @@ function process_char_state_word() {
 
 function process_char() {
     local c=$1 \
+          pr_c=$2 \
           ret=0 \
           pushbuf=1 \
           fn=
@@ -1197,15 +1168,18 @@ function iter_file() {
     local file=$1
     local filesize=$(wc -c <"$file")
     local fileoffset=0
+    local c= pr_c=
 
     push_state parsing
 
     while getc c ; do
         (( ++fileoffset ))
 
-        if ! process_char "$c" ; then
+        if ! process_char "$c" "$pr_c" ; then
             break
         fi
+
+        pr_c=$c
 
         if [[ $c == $LF ]] ; then
             (( ++lineno ))
@@ -1221,7 +1195,9 @@ function iter_file() {
 
     info_progress
 
-    if (( st != eof )) ; then
+    if (( freezebuf )) ; then
+        die "frozen buffer"
+    elif (( st != eof )) ; then
         die "unexpected EOF"
     fi
 }
