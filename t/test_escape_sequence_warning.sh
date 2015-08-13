@@ -25,5 +25,9 @@ $script:7:8 warning: unexpected character in escape sequence
   ........^
 EXPECTED
 
+if [[ $VERBOSE ]] ; then
+    echo >>$script.e "$script:10:1 info: 100% complete"
+fi
+
 bash ${bash_opts:-} bashpp $script 1>/dev/null 2>$script.a </dev/null
 diff -U3 $script.e $script.a

@@ -11,9 +11,9 @@ e=0
 
 bash_opts=
 
-R="[38;5;208m\u25CF[0m"
-F="[38;5;167m\u2718[0m"
-P="[38;5;106m\u2714[0m"
+R="[38;5;208m$(printf "\x25\xCF" | iconv -f utf-16be)[0m"
+F="[38;5;167m$(printf "\x27\x18" | iconv -f utf-16be)[0m"
+P="[38;5;106m$(printf "\x27\x14" | iconv -f utf-16be)[0m"
 
 mkdir -p "$b/t"
 
