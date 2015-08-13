@@ -25,7 +25,7 @@ $script:7:8 warning: unexpected character in escape sequence
   ........^
 EXPECTED
 
-if [[ $VERBOSE ]] ; then
+if (( ${VERBOSE:-0} )) ; then
     echo >>$script.e "$script:10:1 info: 100% complete"
 fi
 
