@@ -38,7 +38,7 @@ fi
 while true ; do
     count=0
 
-    for f in $t/test_*.sh ; do
+    for f in $t/test_${1:-*}.sh ; do
         ff=t/${f##*/}
 
         (( ++count ))
