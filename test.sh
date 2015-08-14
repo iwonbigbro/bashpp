@@ -12,6 +12,7 @@ e=0
 bash_opts=
 
 R="[38;5;208m$(printf "\x25\xCF" | iconv -f utf-16be)[0m"
+S="[38;5;208m$(printf "\x25\xBA" | iconv -f utf-16be)[0m"
 F="[38;5;167m$(printf "\x27\x18" | iconv -f utf-16be)[0m"
 P="[38;5;106m$(printf "\x27\x14" | iconv -f utf-16be)[0m"
 
@@ -46,8 +47,15 @@ while true ; do
 
         export bash_opts
 
-        if time_fn bash $bash_opts $f 1>$b/$ff.o 2>&1 ; then
+        ret=0
+        time_fn bash $bash_opts $f 1>$b/$ff.o 2>&1 || ret=$?
+
+        if (( ret == 0 )) ; then
             printf "\r $P  %s[38;5;106m%s[0m\n" "$ff" "$(tail -1 $b/$ff.t)"
+        elif (( ret == 80 )) ; then
+            :>$b/$ff.s
+
+            printf "\r $S  %s[38;5;106m%s[0m\n" "$ff" "$(tail -1 $b/$ff.t)"
         else
             :>$b/$ff.f
 
@@ -91,6 +99,8 @@ $(for f in $b/t/*.o ; do
 
     if [[ -e $b/t/$fn.f ]] ; then
         printf '<failure type="error">Test failed - see output</failure>\n'
+    elif [[ -e $b/t/$fn.s ]] ; then
+        printf '<skipped/>\n'
     fi
 
     printf ' </testcase>\n'
