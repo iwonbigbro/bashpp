@@ -597,7 +597,11 @@ function push_buf() {
         SECONDS=0
     fi
 
+    debug_l 2 "pushing: '$1'"
+
     if (( freezebuf )) ; then
+        debug_l 2 "buffer frozen, freezebuf=$freezebuf"
+
         freezebuf_buf+=$1
     else
         if (( buf_ptr == fileoffset )) ; then
@@ -671,25 +675,34 @@ function process_directive_include() {
         local d= found=0
         local IFS=':'
 
+        debug "searching \$BASHINC include paths for: '$includefile'"
+
         for d in $BASHINC ; do
             if [[ -f $d/$includefile ]] ; then
                 includefile=$d/$includefile
                 found=1
+
+                debug "found include in: '$d'"
+
                 break
             fi
         done
 
-        IFS=
+        unset IFS
 
         if (( ! found )) ; then
             err "file not found: $includefile"
+
             return 1
         fi
     fi
 
     if [[ $includefile ]] ; then
+        debug "iterating include file: '$includefile'"
+
         iter_file "$includefile"
-        return
+
+        return 0
     else
         err "illegal include: $line"
     fi
@@ -866,7 +879,7 @@ function process_char_state_directive() {
 
         if callable $fn ; then
             if $fn "$directive_params" "$thawed_buf" ; then
-                return 0
+                return $RET_PROCHR_SKIP
             fi
         else
             err "invalid directive: $directive"
@@ -1232,10 +1245,10 @@ function process_char() {
 }
 
 function iter_files() {
-    local file=
+    local f=
 
-    for file in "$@" ; do
-        iter_file "$file"
+    for f in "$@" ; do
+        iter_file "$f"
     done
 }
 
@@ -1276,6 +1289,12 @@ function iter_file() {
     local buf_ptr=0
     local buf=
 
+    local getc_bufsize=4096
+    local getc_buflen=0
+    local getc_buf=
+    local getc_offset=0
+    local getc_eof=0
+
     push_state parsing
 
     while getc c ; do
@@ -1306,12 +1325,9 @@ function iter_file() {
     elif (( st != eof )) ; then
         die "unexpected EOF"
     fi
-}
 
-getc_bufsize=4096
-getc_buflen=0
-getc_offset=0
-getc_eof=0
+    return 0
+}
 
 function getc() {
     if (( getc_offset == getc_buflen )) ; then
@@ -1331,7 +1347,7 @@ function getc() {
 
     printf -v $1 "%c" "${getc_buf:$getc_offset:1}"
 
-    debug_l 2 "${!1}"
+    debug_l 2 "'${!1}'"
 
     (( ++getc_offset ))
 }
