@@ -7,6 +7,8 @@ export PATH=$PATH:$(readlink -m "$BASH_SOURCE/../../bin")
 script=$(mktemp)
 trap "rm -f $script" EXIT
 
+VERBOSE=0
+
 cat >$script.1 <<SCRIPT
 # Script 1
 SCRIPT
