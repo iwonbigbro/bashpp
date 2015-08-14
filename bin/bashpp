@@ -13,10 +13,6 @@ BASHINC=${BASHINC:-}
 
 declare -A DEFS=()
 declare -A MACROS=()
-declare -A DIRS=(
-    ["define"]=1
-    ["undef"]=1
-)
 
 output="/dev/stdout"
 
@@ -74,45 +70,18 @@ if [[ -t 2 ]] ; then
     tty=1
 fi
 
-<<<<<<< develop
-lineno=1
-charno=1
-flushed=0
-
 states=1
 state_names=( "eof" )
 eof=0
 
-state_stack=()
-state_stackbuf=()
-state_stacklen=0
-
-st_name="eof"
-st_charno=1
-st_buf=
-st=$eof
-
-heredoc_stack=( "<empty>" )
-heredoc_stacktype=( "<empty>" )
-heredoc_stacklen=0
-hd_inline=0
-hd_type="<empty>"
-hd_buf=
-hd="<empty>"
-
-flushbuf=0
-freezebuf=0
-freezebuf_stack=()
-freezebuf_stacklen=0
-freezebuf_buf=
-thawed_buf=
-
-=======
->>>>>>> local
 files=()
 
 function assoc_arrcpy() {
     declare -p $1 | sed 's?^[^=]\+=??'
+}
+
+function callable() {
+    declare -F $1 >/dev/null 2>&1 || [[ -x $1 ]]
 }
 
 function msgtype_colour() {
@@ -153,8 +122,8 @@ function msg_errorline() {
     local stdin=$1
     local errline=
 
-    if (( msg_errorline_lock )) ; then
-        return
+    if (( msg_errorline_lock != 0 )) ; then
+        return 0
     fi
 
     (( ++msg_errorline_lock )) || true
@@ -192,7 +161,7 @@ function msg_errorline() {
             "  $indicator"
     fi
 
-    (( --msg_errorline_lock ))
+    (( --msg_errorline_lock )) || true
 }
 
 function msg() {
@@ -210,7 +179,11 @@ function msg() {
         if [[ $msgtype != +(error|warning|debug) ]] ; then
             show_errorline=0
         fi
-            
+
+        if (( tty )) ; then
+            printf >&2 "[0m"
+        fi
+
         if [[ $file == "/dev/stdin" ]] ; then
             printf >&2 "<stdin>:$lineno:$charno $msgtype_colour: %s\n" "$msg"
 
@@ -359,24 +332,22 @@ function describe_char() {
     esac
 }
 
-function configure_states() {
+function initialise() {
     local fn= \
           name= \
           exp= \
           x=
 
     while read x x fn ; do
-        if [[ $fn != process_char_state_* ]] ; then
-            continue
+        if [[ $fn == process_char_state_* ]] ; then
+            name=${fn#process_char_state_}
+            state_names+=( $name )
+
+            printf -v $name "%d" $states
+            export $name
+
+            (( ++states ))
         fi
-
-        name=${fn#process_char_state_}
-        state_names+=( $name )
-
-        printf -v $name "%d" $states
-        export $name
-
-        (( ++states ))
     done < <(declare -F)
 
     local debug_states=${DEBUG_STATES//,/ }
@@ -399,12 +370,9 @@ function configure_states() {
         fi
     done
 
-<<<<<<< develop
-=======
     st_name_default="eof"
     st_default=$eof
 
->>>>>>> local
     if (( ${#DEBUG_STATES} > 0 )) ; then
         DEBUG_STATES_FLAG=1
 
@@ -669,8 +637,6 @@ function flush_buf() {
 
 function process_directive_define() {
     local args=$1
-<<<<<<< develop
-=======
     local line=$2
 
     if [[ $args =~ ^([A-Za-z_][A-Za-z0-9_]*)[\ \t]+(.*)$ ]] ; then
@@ -692,7 +658,6 @@ function process_directive_include() {
     local args=$1
     local line=$2
     local includefile=
->>>>>>> local
 
     if [[ $args =~ ^["](.+)["]$ || $args =~ ^['](.+)[']$ ]] ; then
         includefile=${BASH_REMATCH[1]}
@@ -832,14 +797,51 @@ function process_char_state_conditional_operator() {
     fi
 }
 
+function process_char_state_conditional_whitespace() {
+    if [[ $c != [$WHITESPACE] ]] ; then
+        pop_state
+
+        return $RET_PROCHR_CONT
+    fi
+}
+
+function process_char_state_conditional_end() {
+    if (( st_charno < 2 )) ; then
+        return 0
+    elif [[ $c == [$WHITESPACE] ]] ; then
+        case $st_buf in
+        ('&&'|'||'|'-a'|'-o')
+            pop_state
+            push_state conditional
+
+            if [[ $st_buf == "-a" ]] ; then
+                warning "posix operator in non-posix conditional: use '&&'"
+            elif [[ $st_buf == "-o" ]] ; then
+                warning "posix operator in non-posix conditional: use '||'"
+            fi
+
+            return $RET_PROCHR_CONT
+            ;;
+        (']]')
+            pop_state
+
+            return $RET_PROCHR_CONT
+            ;;
+        esac
+    fi
+
+    err "unexpected characters in conditional: '$st_buf'"
+
+    pop_state
+}
+
 function process_char_state_conditional_regex() {
     if [[ $c == '\' ]] ; then
         push_state escape
-    elif [[ $c == [$CRLF] ]] ; then
-        err "unexpected $(describe_char "$c") in regular expression"
+    elif [[ $c == [$WHITESPACE] ]] ; then
         pop_state
-    elif [[ $c == ' ' ]] ; then
-        pop_state
+        push_state conditional_end
+        push_state conditional_whitespace
 
         return $RET_PROCHR_CONT
     fi
@@ -860,8 +862,10 @@ function process_char_state_directive() {
 
         pop_state
 
-        if (( ${DIRS[$directive]:-0} == 1 )) ; then
-            if process_directive_$directive "$directive_params" ; then
+        local fn="process_directive_$directive"
+
+        if callable $fn ; then
+            if $fn "$directive_params" "$thawed_buf" ; then
                 return 0
             fi
         else
@@ -1463,7 +1467,7 @@ if (( ${#files[@]} == 0 )) ; then
     set -- /dev/stdin
 fi
 
-configure_states
+initialise
 
 iter_files "${files[@]}" >"$output"
 
