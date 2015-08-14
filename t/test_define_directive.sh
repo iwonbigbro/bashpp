@@ -17,8 +17,6 @@ SCRIPT
 
 cat >$script.e <<'EXPECTED'
 
-
-
 1
 1
 EXPECTED
