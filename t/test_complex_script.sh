@@ -4,7 +4,7 @@ set -euo pipefail
 
 export PATH=$PATH:$(readlink -m "$BASH_SOURCE/../../bin")
 
-if [[ ${QUICK_TESTS:-1} == 1 ]] ; then
+if [[ ${QUICK_TESTS:-0} == 1 ]] ; then
     # Skip this long running test.
     exit 80
 fi
