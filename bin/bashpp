@@ -1085,12 +1085,12 @@ function process_char_state_number() {
 }
 
 function process_char_state_parens() {
-    if [[ $c == '\' ]] ; then
-        push_state escape
-    elif [[ $c == '(' ]] ; then
+    if (( st_charno == 2 )) && [[ "${st_buf}$c" == '((' ]] ; then
         switch_state arithmetic
     elif [[ $c == ')' ]] ; then
         pop_state
+    else
+        process_char_state_parsing
     fi
 }
 
