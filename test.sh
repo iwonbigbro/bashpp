@@ -83,8 +83,8 @@ while true ; do
     fi
 done
 
-if [[ $1 == *.xml ]] ; then
-    cat >$1 <<JUNIT
+if [[ ${JUNIT_XML_OUT:-} == *.xml ]] ; then
+    cat >$JUNIT_XML_OUT <<JUNIT
 <?xml version="1.0" encoding="UTF-8"?>
 <testsuite tests="${count}">
 $(for f in $b/t/*.o ; do
