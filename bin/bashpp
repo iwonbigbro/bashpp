@@ -98,9 +98,39 @@ if [[ -t 2 ]] ; then
     tty=1
 fi
 
+<<<<<<< HEAD
 states=1
 state_names=( "eof" )
 eof=0
+=======
+lineno=1
+charno=1
+flushed=0
+
+state_stack=()
+state_stackbuf=()
+state_stacklen=0
+
+st_name=
+st_charno=1
+st_buf=
+st=
+
+heredoc_stack=( "<empty>" )
+heredoc_stacktype=( "<empty>" )
+heredoc_stacklen=0
+hd_inline=0
+hd_type="<empty>"
+hd_buf=
+hd="<empty>"
+
+flushbuf=0
+freezebuf=0
+freezebuf_stack=()
+freezebuf_stacklen=0
+freezebuf_buf=
+thawed_buf=
+>>>>>>> master
 
 files=()
 
@@ -366,8 +396,13 @@ function initialise() {
           exp= \
           x=
 
+    local state_names=( "eof" )
+
+    states=${#state_names[@]}
+
     while read x x fn ; do
         if [[ $fn == process_char_state_* ]] ; then
+<<<<<<< HEAD
             name=${fn#process_char_state_}
             state_names+=( $name )
 
@@ -377,29 +412,46 @@ function initialise() {
             (( ++states ))
         fi
     done < <(declare -F)
+=======
+            state_names+=( "${fn#process_char_state_}" )
+        fi
+    done < <(declare -F)
 
     local debug_states=${DEBUG_STATES//,/ }
 
     DEBUG_STATES=
 
-    for exp in $debug_states ; do
+    for name in "${state_names[@]}" ; do
+        printf -v $name "%d" $states
+        export $name
+
+        (( ++states ))
+>>>>>>> master
+
         local added=0
 
-        for name in "${state_names[@]}" ; do
-            if [[ $name == $exp && " $DEBUG_STATES " != *" $name "* ]] ; then
-                DEBUG_STATES+=" $name"
+        if [[ $debug_states ]] ; then
+            for exp in $debug_states ; do
+                if [[ $name == $exp && " $DEBUG_STATES " != *" $name "* ]] ; then
+                    DEBUG_STATES+=" $name"
 
-                (( ++added )) || true
+                    (( ++added )) || true
+                fi
+            done
+
+            if (( ! added )) ; then
+                die "invalid state expression: $exp"
             fi
-        done
-
-        if (( ! added )) ; then
-            die "invalid state expression: $exp"
         fi
     done
 
+<<<<<<< HEAD
     st_name_default="eof"
     st_default=$eof
+=======
+    st_name="eof"
+    st=$eof
+>>>>>>> master
 
     if (( ${#DEBUG_STATES} > 0 )) ; then
         DEBUG_STATES_FLAG=1
@@ -516,7 +568,7 @@ function push_state() {
 }
 
 function pop_state() {
-    if (( ${#state_stack[@]} == 0 )) ; then
+    if (( state_stacklen == 0 || ${#state_stack[@]} != state_stacklen )) ; then
         die "state_stack accounting error"
     fi
 
@@ -670,6 +722,28 @@ function flush_buf() {
 function process_directive_define() {
     local args=$1
     local line=$2
+<<<<<<< HEAD
+=======
+
+    if [[ $args =~ ^([A-Za-z_][A-Za-z0-9_]*)[\ \t]+(.*)$ ]] ; then
+        define "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+        return
+
+    elif [[ $args =~ ^([A-Za-z_][A-Za-z0-9_]*)$ ]] ; then
+        define "${BASH_REMATCH[1]}" 1
+        return
+
+    fi
+
+    err "illegal define: $line"
+
+    return 1
+}
+
+function process_directive_include() {
+    local args=$1
+    local line=$2
+>>>>>>> master
 
     if [[ $args =~ ^([A-Za-z_][A-Za-z0-9_]*)[\ \t]+(.*)$ ]] ; then
         define "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
@@ -905,9 +979,15 @@ function process_char_state_directive() {
 
         local fn="process_directive_$directive"
 
+<<<<<<< HEAD
         if callable $fn ; then
             if $fn "$directive_params" "$thawed_buf" ; then
                 return $RET_PROCHR_SKIP
+=======
+        if callable "$fn" ; then
+            if "$fn" "$directive_params" "$thawed_buf" ; then
+                return 0
+>>>>>>> master
             fi
         else
             err "invalid directive: $directive"
