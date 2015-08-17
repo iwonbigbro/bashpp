@@ -649,7 +649,9 @@ function push_buf() {
 
         buf+=$1
 
-        if [[ $1 == $c ]] ; then
+        if [[ "$1" == "$c" ]] ; then
+            debug_l 2 "'$1' == '$c', moving buf_ptr=$fileoffset"
+
             buf_ptr=$fileoffset
         fi
 
@@ -1266,11 +1268,15 @@ function process_char() {
     while true ; do
         fn="process_char_state_$st_name"
 
+        debug_l 2 "entering $fn()"
+
         if $fn ; then
             ret=0
         else
             ret=$?
         fi
+
+        debug_l 2 "left $fn(): ret = $ret"
 
         if (( ret != 0 )) ; then
             if (( ret & RET_PROCHR_PUSHBUF )) ; then
