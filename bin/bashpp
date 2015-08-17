@@ -306,7 +306,11 @@ function info() {
 }
 
 function info_progress() {
-    local p=$(( ( fileoffset * 100 ) / filesize ))
+    local p=0
+    
+    if (( filesize > 0 )) ; then
+        p=$(( ( fileoffset * 100 ) / filesize ))
+    fi
 
     if (( DEBUG )) ; then
         debug "${p}% complete"
