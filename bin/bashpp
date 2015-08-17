@@ -75,6 +75,7 @@ WHITESPACE=$'\r\n\t '
 
 errors=0
 warnings=0
+lineno=0
 
 msg_errorline_lock=0
 
@@ -284,7 +285,7 @@ function die() {
           funcname=${funcname:+$funcname }
 
     stacktrace
-    err "$@"
+    msg "error" "$*"
 
     exit 1
 }
