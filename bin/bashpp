@@ -1417,6 +1417,13 @@ function getc() {
 
         getc_buflen=${#getc_buf}
         getc_offset=0
+
+        if (( getc_buflen == 0 )) ; then
+            debug "nothing read from file - assuming eof"
+
+            getc_eof=1
+            return 1
+        fi
     fi
 
     printf -v $1 "%c" "${getc_buf:$getc_offset:1}"
