@@ -1071,7 +1071,13 @@ function process_char_state_heredoc_tagged() {
         warn "heredocument tag contains new-line: ${thawed_buf//[$CRLF]/\\n}"
     fi
 
-    push_heredoc "$thawed_buf"
+    local tag=$thawed_buf
+
+    if [[ ${tag:0:1} == "-" ]] ; then
+        tag=${tag:1}
+    fi
+
+    push_heredoc "$tag"
     push_buf "$thawed_buf"
     pop_state
 }
