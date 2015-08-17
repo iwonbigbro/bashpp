@@ -4,6 +4,11 @@ set -euo pipefail
 
 export PATH=$PATH:$(readlink -m "$BASH_SOURCE/../../bin")
 
+if [[ ${QUICK_TESTS:-0} == 1 ]] ; then
+    # Skip this long running test.
+    exit 80
+fi
+
 script=$(mktemp)
 trap "rm -f $script" EXIT
 

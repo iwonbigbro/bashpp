@@ -11,16 +11,44 @@ cat >$script <<'SCRIPT'
 #define A 1
 #define B
 
-A
-B
+echo A
+echo B
+
+var_A=A
+var_B=B
+
+A=A
+B=B
+
+echo $var_A
+echo $var_B
+
+echo $A
+echo $B
+
+a="A"
+b="B"
 SCRIPT
 
 cat >$script.e <<'EXPECTED'
 
+echo 1
+echo 1
 
+var_A=1
+var_B=1
 
-1
-1
+A=1
+B=1
+
+echo $var_A
+echo $var_B
+
+echo $A
+echo $B
+
+a="A"
+b="B"
 EXPECTED
 
 bash ${bash_opts:-} bashpp $script >$script.a
