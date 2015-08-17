@@ -558,13 +558,20 @@ function switch_state() {
 function push_heredoc() {
     debug "$hd -> $1"
 
-    if [[ $1 =~ ^['](.+)[']$ ]] ; then
+    # Workaround for vim syntax highlighting error.
+    local a="'" q='"'
+
+    if [[ "$1" =~ ^${a}(.+)${a}$ ]] ; then
+        debug "heredoc type = apos"
+
         hd_type=$apos
         hd=${BASH_REMATCH[1]}
     else
+        debug "heredoc type = default"
+
         hd_type=$quote
 
-        if [[ $1 =~ ^["](.+)["]$ ]] ; then
+        if [[ $1 =~ ^${q}(.+)${q}$ ]] ; then
             hd=${BASH_REMATCH[1]}
         else
             hd=$1
@@ -649,7 +656,9 @@ function push_buf() {
 
         buf+=$1
 
-        if [[ $1 == $c ]] ; then
+        if [[ "$1" == "$c" ]] ; then
+            debug_l 2 "'$1' == '$c', moving buf_ptr=$fileoffset"
+
             buf_ptr=$fileoffset
         fi
 
@@ -1091,6 +1100,8 @@ function process_char_state_heredoc_tagged() {
     push_heredoc "$tag"
     push_buf "$thawed_buf"
     pop_state
+
+    return $RET_PROCHR_CONT
 }
 
 function process_char_state_number() {
@@ -1112,7 +1123,7 @@ function process_char_state_parens() {
 }
 
 function process_char_state_parsing() {
-    if (( heredoc_stacklen )) && [[ $c == [$CRLF] ]] ; then
+    if (( heredoc_stacklen > 0 )) && [[ $c == [$CRLF] ]] ; then
         push_state heredoc
     elif [[ $c == '#' ]] ; then
         if (( charno == 1 )) ; then
@@ -1266,11 +1277,15 @@ function process_char() {
     while true ; do
         fn="process_char_state_$st_name"
 
+        debug_l 2 "entering $fn()"
+
         if $fn ; then
             ret=0
         else
             ret=$?
         fi
+
+        debug_l 2 "left $fn(): ret = $ret"
 
         if (( ret != 0 )) ; then
             if (( ret & RET_PROCHR_PUSHBUF )) ; then
