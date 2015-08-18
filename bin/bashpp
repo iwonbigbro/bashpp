@@ -765,6 +765,8 @@ function process_directive_error() {
     fi
 
     msg "error_directive" "${BASH_REMATCH[1]}"
+
+    (( ++errors )) || true
 }
 
 function process_directive_ifdef() {
