@@ -711,6 +711,35 @@ function process_directive_define() {
     return 1
 }
 
+function process_directive_else() {
+    if (( st == ifdef_include )) ; then
+        pop_state
+        push_state ifdef_exclude
+        freeze_buf
+    elif (( st == ifdef_exclude )) ; then
+        thaw_buf
+        pop_state
+        push_state ifdef_include
+    else
+        err "illegal else: $line"
+
+        return 1
+    fi
+}
+
+function process_directive_endif() {
+    if (( st == ifdef_include )) ; then
+        pop_state
+    elif (( st == ifdef_exclude )) ; then
+        thaw_buf
+        pop_state
+    else
+        err "illegal endif: $line"
+
+        return 1
+    fi
+}
+
 function process_directive_error() {
     local args=$1
     local line=$2
@@ -730,6 +759,32 @@ function process_directive_error() {
     fi
 
     msg "error_directive" "${BASH_REMATCH[1]}"
+}
+
+function process_directive_ifdef() {
+    local args=$1
+    local line=$2
+
+    if [[ $args =~ ^\ *([^$WHITESPACE]+)\ *$ ]] ; then
+        local def=${BASH_REMATCH[1]}
+
+        if [[ ${DEFS[$def]+set} == "set" ]] ; then
+            debug "$def is defined"
+
+            push_state ifdef_include
+        else
+            debug "$def is not defined"
+
+            push_state ifdef_exclude
+            freeze_buf
+        fi
+
+        return 0 
+    fi
+
+    err "illegal ifdef: $line"
+
+    return 1
 }
 
 function process_directive_include() {
@@ -1130,6 +1185,17 @@ function process_char_state_heredoc_tagged() {
     return $RET_PROCHR_CONT
 }
 
+function process_char_state_ifdef_include() {
+    process_char_state_parsing || return $?
+}
+
+function process_char_state_ifdef_exclude() {
+    # Enter the directive state only when we hit a suspected directive.
+    if (( charno == 1 )) && [[ $c == '#' ]] ; then
+        process_char_state_parsing || return $?
+    fi
+}
+
 function process_char_state_number() {
     if [[ $c != [0-9] ]] ; then
         pop_state
@@ -1144,7 +1210,7 @@ function process_char_state_parens() {
     elif [[ $c == ')' ]] ; then
         pop_state
     else
-        process_char_state_parsing
+        process_char_state_parsing || return $?
     fi
 }
 
