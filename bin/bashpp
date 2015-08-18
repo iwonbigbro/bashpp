@@ -114,11 +114,11 @@ function callable() {
 }
 
 function msgtype_colour() {
-    local tag=$1
+    local tag=${1%%_*}
     local on= off=
 
     if (( tty )) ; then
-        case $1 in
+        case $tag in
         (stop*)      on="[1m[38;5;124m" ;;
         (error*)     on="[1m[38;5;167m" ;;
         (warning*)   on="[1m[38;5;213m" ;;
@@ -709,6 +709,27 @@ function process_directive_define() {
     err "illegal define: $line"
 
     return 1
+}
+
+function process_directive_error() {
+    local args=$1
+    local line=$2
+    local a="'" q='"'
+    local msg=
+
+    if [[ $args =~ ^\ *${a}(.+)${a}\ *$ ]] ; then
+        msg=${BASH_REMATCH[1]}
+    elif [[ $args =~ ^\ *${q}(.+)${q}\ *$ ]] ; then
+        msg=${BASH_REMATCH[1]}
+    elif [[ $args =~ ^\ *(.+)\ *$ ]] ; then
+        msg=${BASH_REMATCH[1]}
+    else
+        err "illegal error: $line"
+
+        return 1
+    fi
+
+    msg "error_directive" "${BASH_REMATCH[1]}"
 }
 
 function process_directive_include() {

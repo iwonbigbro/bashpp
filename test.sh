@@ -48,7 +48,7 @@ while true ; do
         export bash_opts
 
         ret=0
-        time_fn bash $bash_opts $f 1>$b/$ff.o 2>&1 || ret=$?
+        time_fn bash $bash_opts $f 0</dev/null 1>$b/$ff.o 2>&1 || ret=$?
 
         if (( ret == 0 )) ; then
             printf "\r $P  %s[38;5;106m%s[0m\n" "$ff" "$(tail -1 $b/$ff.t)"
