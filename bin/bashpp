@@ -75,6 +75,7 @@ WHITESPACE=$'\r\n\t '
 
 errors=0
 warnings=0
+lineno=0
 
 msg_errorline_lock=0
 
@@ -113,11 +114,11 @@ function callable() {
 }
 
 function msgtype_colour() {
-    local tag=$1
+    local tag=${1%%_*}
     local on= off=
 
     if (( tty )) ; then
-        case $1 in
+        case $tag in
         (stop*)      on="[1m[38;5;124m" ;;
         (error*)     on="[1m[38;5;167m" ;;
         (warning*)   on="[1m[38;5;213m" ;;
@@ -284,7 +285,7 @@ function die() {
           funcname=${funcname:+$funcname }
 
     stacktrace
-    err "$@"
+    msg "error" "$*"
 
     exit 1
 }
@@ -710,6 +711,114 @@ function process_directive_define() {
     return 1
 }
 
+function process_directive_else() {
+    local args=$1
+    local line=$2
+    
+    if (( st == ifdef_include )) ; then
+        pop_state
+        push_state ifdef_exclude
+        freeze_buf
+    elif (( st == ifdef_exclude )) ; then
+        thaw_buf
+        pop_state
+        push_state ifdef_include
+    else
+        err "illegal else: $line"
+
+        return 1
+    fi
+}
+
+function process_directive_endif() {
+    local args=$1
+    local line=$2
+
+    if (( st == ifdef_include )) ; then
+        pop_state
+    elif (( st == ifdef_exclude )) ; then
+        thaw_buf
+        pop_state
+    else
+        err "illegal endif: $line"
+
+        return 1
+    fi
+}
+
+function process_directive_error() {
+    local args=$1
+    local line=$2
+    local a="'" q='"'
+    local msg=
+
+    if [[ $args =~ ^\ *${a}(.+)${a}\ *$ ]] ; then
+        msg=${BASH_REMATCH[1]}
+    elif [[ $args =~ ^\ *${q}(.+)${q}\ *$ ]] ; then
+        msg=${BASH_REMATCH[1]}
+    elif [[ $args =~ ^\ *(.+)\ *$ ]] ; then
+        msg=${BASH_REMATCH[1]}
+    else
+        err "illegal error: $line"
+
+        return 1
+    fi
+
+    msg "error_directive" "${BASH_REMATCH[1]}"
+}
+
+function process_directive_ifdef() {
+    local args=$1
+    local line=$2
+
+    if [[ $args =~ ^\ *([^$WHITESPACE]+)\ *$ ]] ; then
+        local def=${BASH_REMATCH[1]}
+
+        if [[ ${DEFS[$def]+set} == "set" ]] ; then
+            debug "$def is defined"
+
+            push_state ifdef_include
+        else
+            debug "$def is not defined"
+
+            push_state ifdef_exclude
+            freeze_buf
+        fi
+
+        return 0 
+    fi
+
+    err "illegal ifdef: $line"
+
+    return 1
+}
+
+function process_directive_ifndef() {
+    local args=$1
+    local line=$2
+
+    if [[ $args =~ ^\ *([^$WHITESPACE]+)\ *$ ]] ; then
+        local def=${BASH_REMATCH[1]}
+
+        if [[ ${DEFS[$def]+set} == "set" ]] ; then
+            debug "$def is defined"
+
+            push_state ifdef_exclude
+            freeze_buf
+        else
+            debug "$def is not defined"
+
+            push_state ifdef_include
+        fi
+
+        return 0 
+    fi
+
+    err "illegal ifdef: $line"
+
+    return 1
+}
+
 function process_directive_include() {
     local args=$1
     local line=$2
@@ -1108,6 +1217,17 @@ function process_char_state_heredoc_tagged() {
     return $RET_PROCHR_CONT
 }
 
+function process_char_state_ifdef_include() {
+    process_char_state_parsing || return $?
+}
+
+function process_char_state_ifdef_exclude() {
+    # Enter the directive state only when we hit a suspected directive.
+    if (( charno == 1 )) && [[ $c == '#' ]] ; then
+        process_char_state_parsing || return $?
+    fi
+}
+
 function process_char_state_number() {
     if [[ $c != [0-9] ]] ; then
         pop_state
@@ -1122,7 +1242,7 @@ function process_char_state_parens() {
     elif [[ $c == ')' ]] ; then
         pop_state
     else
-        process_char_state_parsing
+        process_char_state_parsing || return $?
     fi
 }
 
