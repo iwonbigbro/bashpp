@@ -712,6 +712,9 @@ function process_directive_define() {
 }
 
 function process_directive_else() {
+    local args=$1
+    local line=$2
+    
     if (( st == ifdef_include )) ; then
         pop_state
         push_state ifdef_exclude
@@ -728,6 +731,9 @@ function process_directive_else() {
 }
 
 function process_directive_endif() {
+    local args=$1
+    local line=$2
+
     if (( st == ifdef_include )) ; then
         pop_state
     elif (( st == ifdef_exclude )) ; then
