@@ -793,6 +793,32 @@ function process_directive_ifdef() {
     return 1
 }
 
+function process_directive_ifndef() {
+    local args=$1
+    local line=$2
+
+    if [[ $args =~ ^\ *([^$WHITESPACE]+)\ *$ ]] ; then
+        local def=${BASH_REMATCH[1]}
+
+        if [[ ${DEFS[$def]+set} == "set" ]] ; then
+            debug "$def is defined"
+
+            push_state ifdef_exclude
+            freeze_buf
+        else
+            debug "$def is not defined"
+
+            push_state ifdef_include
+        fi
+
+        return 0 
+    fi
+
+    err "illegal ifdef: $line"
+
+    return 1
+}
+
 function process_directive_include() {
     local args=$1
     local line=$2
