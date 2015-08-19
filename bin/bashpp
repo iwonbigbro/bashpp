@@ -449,7 +449,7 @@ function is_define() {
         die "ambiguous request"
     fi
 
-    [[ ${!DEFS[$1]:-} ]]
+    [[ ${DEFS[$1]+set} == "set" ]]
 }
 
 function is_macro() {
@@ -461,20 +461,28 @@ function is_macro() {
 }
 
 function define() {
-    local name=${1%%(*} \
-          parens=${1#*(} \
+    local name= \
+          parens= \
           define=${2:-1}
 
-    if ! [[ $name =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] ; then
-        err "illegal definition name: $name"
-    fi
+    if [[ $1 =~ ^([A-Za-z_][A-Za-z0-9_]*)(\(.+\))?$ ]] ; then
+        name=${BASH_REMATCH[1]}
+        parens=${BASH_REMATCH[2]:-}
 
-    if [[ $1 == *"("* ]] ; then
-        definefn "$name" "${parens%)}" "$define"
-        return 0
+        if [[ $parens ]] ; then
+            parens=${parens#(}
+            parens=${parens%)}
+        fi
+    else
+        err "illegal definition: $1"
     fi
 
     info "-D $name=$define"
+
+    if [[ $parens ]] ; then
+        definefn "$name" "$parens" "$define"
+        return 0
+    fi
 
     DEFS[$name]=$define
 }
@@ -1391,12 +1399,9 @@ function process_char_state_word() {
             value=${DEFS[$thawed_buf]}
 
             # Only substitute whitespace delimited definition tokens.
-            if [[ $c == [$WHITESPACE] ]] ; then
+            if [[ $c == [$WHITESPACE\;] ]] ; then
                 info "substituting '$thawed_buf' with '$value'"
             else
-                warn "ambiguous token substitution '$thawed_buf' " \
-                     "defined as '$value'"
-
                 value=$thawed_buf
             fi
         fi
