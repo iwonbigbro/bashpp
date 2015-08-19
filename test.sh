@@ -24,6 +24,17 @@ if [[ $DEBUG == 1 ]] ; then
     bash_opts+=-x
 fi
 
+function assert() {
+    local lines=() lineno=${BASH_LINENO[0]}
+
+    mapfile -tn1 -s$((lineno-1)) lines <"${BASH_SOURCE[1]}"
+
+    printf "ASSERT: ${BASH_SOURCE[1]##*/}:$lineno: %s\n" "$lines"
+
+    exit 1
+}
+export USE_ASSERT="function $(declare -f assert)"
+
 if hash time 2>/dev/null ; then
 function time_fn() {
     \time -f " - took %e (S:%S, U:%U) secs" -o $b/$ff.t "$@"

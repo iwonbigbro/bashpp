@@ -19,6 +19,6 @@ cat >$script.err_e <<EXPECTED
 $script:1:23 error: I am an error
 EXPECTED
 
-bash ${bash_opts:-} bashpp $script -o $script.a 2>$script.err_a || true
+bash ${bash_opts:-} bashpp $script >$script.a 2>$script.err_a || true
 diff -U3 $script.err_e $script.err_a
 diff -U3 $script.e $script.a
