@@ -105,6 +105,17 @@ eof=0
 
 files=()
 
+function cleanup() {
+    local exitcode=$?
+
+    if (( exitcode != 0 )) ; then
+        if [[ $output != "/dev/"* ]] ; then
+            rm -f $output
+        fi
+    fi
+}
+trap 'cleanup' EXIT
+
 function assoc_arrcpy() {
     declare -p $1 | sed 's?^[^=]\+=??'
 }
