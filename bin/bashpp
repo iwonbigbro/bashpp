@@ -858,10 +858,11 @@ function process_directive_include() {
     local args=$1
     local line=$2
     local includefile=
+    local a="'" q='"'
 
     if in_state ifdef_exclude ; then
         return 0
-    elif [[ $args =~ ^["](.+)["]$ || $args =~ ^['](.+)[']$ ]] ; then
+    elif [[ $args =~ ^${q}(.+)${q}$ || $args =~ ^${a}(.+)${a}$ ]] ; then
         includefile=${BASH_REMATCH[1]}
 
         if [[ $includefile != /* ]] ; then
@@ -1087,6 +1088,36 @@ function process_char_state_directive() {
     fi
 }
 
+function process_char_state_directive_heredoc() {
+    if (( st_charno == 2 )) && [[ $c != [a-z] ]] ; then
+        thaw_buf
+        pop_state
+
+        push_buf "$thawed_buf"
+
+        return $RET_PROCHR_CONT
+    elif [[ $c == [$CRLF] ]] ; then
+        thaw_buf
+
+        local directive= directive_params=
+        read directive directive_params <<<"${thawed_buf:1}"
+
+        pop_state
+
+        local fn="process_directive_$directive"
+
+        if callable $fn ; then
+            if $fn "$directive_params" "$thawed_buf" ; then
+                return $RET_PROCHR_SKIP
+            fi
+        else
+            err "invalid directive: $directive"
+        fi
+
+        push_buf "$thawed_buf"
+    fi
+}
+
 function process_char_state_dollar() {
     pop_state
 
@@ -1187,13 +1218,20 @@ function process_char_state_expandvar() {
 
 function process_char_state_heredoc() {
     if [[ $c == [$CRLF] ]] ; then
+        debug "checking hd_buf($hd_buf) == hd($hd)"
+
         if [[ $hd_buf == $hd ]] ; then
             pop_heredoc
         fi
 
         hd_buf=
     else
-        if (( hd_type == quote )) ; then
+        if (( charno == 1 )) && [[ $c == '#' ]] ; then
+            push_state directive_heredoc
+            freeze_buf
+
+            return $RET_PROCHR_CONT
+        elif (( hd_type == quote )) ; then
             if [[ $c == '$' ]] ; then
                 push_state dollar
             elif [[ $c == '`' ]] ; then
