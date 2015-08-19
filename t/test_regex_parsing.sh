@@ -30,6 +30,6 @@ $script:5:36 error: 2: unexpected token in parameter expansion
   ...................................^
 OUTPUT
 
-bash ${bash_opts:-} bashpp $script -o $script.a 2>&1 | tee $script.err_a || true
-diff -U3 $script $script.a
+bash ${bash_opts:-} bashpp $script >$script.a 2>$script.err_a || true
 diff -U3 $script.err_e $script.err_a
+diff -U3 $script $script.a
