@@ -449,7 +449,7 @@ function is_define() {
         die "ambiguous request"
     fi
 
-    [[ ${!DEFS[$1]:-} ]]
+    [[ ${DEFS[$1]+set} == "set" ]]
 }
 
 function is_macro() {
@@ -461,20 +461,28 @@ function is_macro() {
 }
 
 function define() {
-    local name=${1%%(*} \
-          parens=${1#*(} \
+    local name= \
+          parens= \
           define=${2:-1}
 
-    if ! [[ $name =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] ; then
-        err "illegal definition name: $name"
-    fi
+    if [[ $1 =~ ^([A-Za-z_][A-Za-z0-9_]*)(\(.+\))?$ ]] ; then
+        name=${BASH_REMATCH[1]}
+        parens=${BASH_REMATCH[2]:-}
 
-    if [[ $1 == *"("* ]] ; then
-        definefn "$name" "${parens%)}" "$define"
-        return 0
+        if [[ $parens ]] ; then
+            parens=${parens#(}
+            parens=${parens%)}
+        fi
+    else
+        err "illegal definition: $1"
     fi
 
     info "-D $name=$define"
+
+    if [[ $parens ]] ; then
+        definefn "$name" "$parens" "$define"
+        return 0
+    fi
 
     DEFS[$name]=$define
 }
@@ -515,6 +523,16 @@ function debug_state_change() {
             DEBUG_STATES_FLAG=1
         fi
     fi
+}
+
+function in_state() {
+    if [[ $st_name == $1 ]] ; then
+        return 0
+    elif [[ " ${state_stack[*]} " == *" $1 "* ]] ; then
+        return 0
+    fi
+
+    return 1
 }
 
 function push_state() {
@@ -696,14 +714,16 @@ function process_directive_define() {
     local args=$1
     local line=$2
 
-    if [[ $args =~ ^([A-Za-z_][A-Za-z0-9_]*)[\ \t]+(.*)$ ]] ; then
+    if in_state ifdef_exclude ; then
+        return 0
+    elif [[ $args =~ ^([A-Za-z_][A-Za-z0-9_]*)[\ \t]+(.*)$ ]] ; then
         define "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
-        return
 
+        return 0
     elif [[ $args =~ ^([A-Za-z_][A-Za-z0-9_]*)$ ]] ; then
         define "${BASH_REMATCH[1]}" 1
-        return
 
+        return 0
     fi
 
     err "illegal define: $line"
@@ -752,7 +772,9 @@ function process_directive_error() {
     local a="'" q='"'
     local msg=
 
-    if [[ $args =~ ^\ *${a}(.+)${a}\ *$ ]] ; then
+    if in_state ifdef_exclude ; then
+        return 0
+    elif [[ $args =~ ^\ *${a}(.+)${a}\ *$ ]] ; then
         msg=${BASH_REMATCH[1]}
     elif [[ $args =~ ^\ *${q}(.+)${q}\ *$ ]] ; then
         msg=${BASH_REMATCH[1]}
@@ -765,6 +787,8 @@ function process_directive_error() {
     fi
 
     msg "error_directive" "${BASH_REMATCH[1]}"
+
+    (( ++errors )) || true
 }
 
 function process_directive_ifdef() {
@@ -824,7 +848,9 @@ function process_directive_include() {
     local line=$2
     local includefile=
 
-    if [[ $args =~ ^["](.+)["]$ || $args =~ ^['](.+)[']$ ]] ; then
+    if in_state ifdef_exclude ; then
+        return 0
+    elif [[ $args =~ ^["](.+)["]$ || $args =~ ^['](.+)[']$ ]] ; then
         includefile=${BASH_REMATCH[1]}
 
         if [[ $includefile != /* ]] ; then
@@ -1373,12 +1399,9 @@ function process_char_state_word() {
             value=${DEFS[$thawed_buf]}
 
             # Only substitute whitespace delimited definition tokens.
-            if [[ $c == [$WHITESPACE] ]] ; then
+            if [[ $c == [$WHITESPACE\;] ]] ; then
                 info "substituting '$thawed_buf' with '$value'"
             else
-                warn "ambiguous token substitution '$thawed_buf' " \
-                     "defined as '$value'"
-
                 value=$thawed_buf
             fi
         fi
