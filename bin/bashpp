@@ -1388,7 +1388,7 @@ function process_char_state_redirect_fd() {
         fi
     elif [[ $c == [0-9] ]] ; then
         return 0
-    elif [[ $c == [$WHITESPACE] ]] ; then
+    elif [[ $c == [\;$WHITESPACE] ]] ; then
         pop_state
 
         return 0
