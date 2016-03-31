@@ -866,7 +866,7 @@ function process_directive_include() {
         includefile=${BASH_REMATCH[1]}
 
         if [[ $includefile != /* ]] ; then
-            includefile="${file%/*}/$includefile"
+            includefile="$(dirname "$file")/$includefile"
         fi
     elif [[ $args =~ ^\<(.+)\>$ ]] ; then
         includefile=${BASH_REMATCH[1]}
