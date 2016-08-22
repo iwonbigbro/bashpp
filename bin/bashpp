@@ -1060,13 +1060,15 @@ function process_char_state_conditional_regex() {
 }
 
 function process_char_state_directive() {
+    debug_l 2 "st_charno=$st_charno, c=$c"
+
     if (( st_charno == 2 )) && [[ $c != [a-z] ]] ; then
         thaw_buf
         switch_state comment
         push_buf "$thawed_buf"
 
         return $RET_PROCHR_CONT
-    elif [[ $c == [$CRLF] ]] ; then
+    elif (( ${#c} == 0 )) || [[ $c == [$CRLF] ]] ; then
         thaw_buf
 
         local directive= directive_params=
@@ -1468,7 +1470,7 @@ function process_char() {
           pushbuf=1 \
           fn=
 
-    debug_l 2 "$c"
+    debug_l 2 "c='$c'"
 
     while true ; do
         fn="process_char_state_$st_name"
@@ -1569,7 +1571,7 @@ function iter_file() {
         if ! process_char "$c" "$pr_c" ; then
             break
         fi
-
+        
         pr_c=$c
 
         if [[ $c == $LF ]] ; then
@@ -1580,6 +1582,10 @@ function iter_file() {
             (( ++st_charno ))
         fi
     done <"$file"
+
+    if [[ $pr_c != $LF ]] ; then
+      process_char '' "$c" || true
+    fi
 
     pop_state
     flush_buf 1
@@ -1600,6 +1606,7 @@ function getc() {
         debug "buffer empty - loading next $getc_bufsize bytes from file"
 
         if (( getc_eof )) ; then
+            debug "already reached eof"
             return 1
         fi
 
