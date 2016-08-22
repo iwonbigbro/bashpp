@@ -1466,8 +1466,8 @@ function process_char_state_word() {
 function process_char() {
     local c=$1 \
           pr_c=$2 \
+          pushbuf=${3:-1} \
           ret=0 \
-          pushbuf=1 \
           fn=
 
     debug_l 2 "c='$c'"
@@ -1584,7 +1584,7 @@ function iter_file() {
     done <"$file"
 
     if [[ $pr_c != $LF ]] ; then
-      process_char '' "$c" || true
+      process_char '' "$c" 0 || true
     fi
 
     pop_state

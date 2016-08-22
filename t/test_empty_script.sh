@@ -12,7 +12,7 @@ trap "rm -f $script" EXIT
 :>$script
 :>$script.err_e
 
-self=$BASHPID
+self=${BASHPID:-$$}
 
 ( sleep 2 ; kill $self ) &
 
